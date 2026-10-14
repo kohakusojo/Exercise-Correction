@@ -1,6 +1,4 @@
-
 import os
-import math
 import tempfile
 import subprocess
 import urllib.request
@@ -18,9 +16,9 @@ st.set_page_config(page_title="筋トレフォームAI", page_icon="🏋️", la
 
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
 CONFIG = {
-    "ベンチプレス": {"triples": [(11, 13, 15), (12, 14, 16)], "low": 105, "high": 145, "good_low": 105, "good_high": 145, "joint": "肘"},
-    "スクワット": {"triples": [(23, 25, 27), (24, 26, 28)], "low": 120, "high": 155, "good_low": 110, "good_high": 155, "joint": "膝"},
-    "アームカール": {"triples": [(11, 13, 15), (12, 14, 16)], "low": 90, "high": 135, "good_low": 80, "good_high": 145, "joint": "肘"},
+    "ベンチプレス": {"triples": [(11, 13, 15), (12, 14, 16)], "low": 105, "high": 145, "good_low": 105, "good_high": 145, "joint": "肘", "muscles": "CHEST / TRICEPS"},
+    "スクワット": {"triples": [(23, 25, 27), (24, 26, 28)], "low": 120, "high": 155, "good_low": 110, "good_high": 155, "joint": "膝", "muscles": "QUADS / GLUTES"},
+    "アームカール": {"triples": [(11, 13, 15), (12, 14, 16)], "low": 90, "high": 135, "good_low": 80, "good_high": 145, "joint": "肘", "muscles": "BICEPS"},
 }
 
 @st.cache_resource(show_spinner="姿勢推定モデルを準備中...")
@@ -32,19 +30,111 @@ def model_file():
 
 
 def angle3(a, b, c):
-    u = a - b
-    v = c - b
+    u, v = a - b, c - b
     denom = np.linalg.norm(u) * np.linalg.norm(v)
     if denom < 1e-7:
         return None
     return float(np.degrees(np.arccos(np.clip(np.dot(u, v) / denom, -1, 1))))
 
 
+def reliable(lms, ids, threshold=0.40):
+    return all(
+        np.isfinite(lms[i].x) and np.isfinite(lms[i].y)
+        and lms[i].visibility >= threshold
+        for i in ids
+    )
+
+
+def xy(lms, i, w, h):
+    return np.array([lms[i].x * w, lms[i].y * h], dtype=float)
+
+
 def landmark_angle(lms, triple, w, h):
-    if any((not np.isfinite(lms[i].x) or not np.isfinite(lms[i].y) or lms[i].visibility < 0.40) for i in triple):
+    if not reliable(lms, triple):
         return None
-    points = [np.array([lms[i].x * w, lms[i].y * h], dtype=float) for i in triple]
-    return angle3(*points)
+    return angle3(*(xy(lms, i, w, h) for i in triple))
+
+
+def effort_level(angle, cfg, exercise):
+    """動作角度に基づく可視化用の推定。実測の筋負荷ではない。"""
+    if angle is None:
+        return "UNKNOWN", (190, 190, 190)
+    if exercise == "アームカール":
+        if angle <= cfg["low"]:
+            return "HIGH*", (40, 40, 245)
+        if angle < cfg["high"]:
+            return "MID*", (0, 220, 255)
+        return "LOW*", (55, 215, 65)
+    if angle <= cfg["low"]:
+        return "HIGH*", (40, 40, 245)
+    if angle < cfg["high"]:
+        return "MID*", (0, 220, 255)
+    return "LOW*", (55, 215, 65)
+
+
+def paint_segment(frame, a, b, color, thickness=18, alpha=0.48):
+    overlay = frame.copy()
+    p1 = tuple(np.rint(a).astype(int))
+    p2 = tuple(np.rint(b).astype(int))
+    cv2.line(overlay, p1, p2, color, thickness, cv2.LINE_AA)
+    cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+    cv2.line(frame, p1, p2, color, 2, cv2.LINE_AA)
+
+
+def paint_chest(frame, lms, w, h, color):
+    """肩と腰のランドマークから胸部の概略位置を描画。"""
+    if not reliable(lms, [11, 12, 23, 24], threshold=0.32):
+        return
+    left_sh, right_sh = xy(lms, 11, w, h), xy(lms, 12, w, h)
+    left_hip, right_hip = xy(lms, 23, w, h), xy(lms, 24, w, h)
+    sh = (left_sh + right_sh) / 2
+    hip = (left_hip + right_hip) / 2
+    torso = hip - sh
+    length = float(np.linalg.norm(torso))
+    shoulder_width = float(np.linalg.norm(right_sh - left_sh))
+    if length < 12:
+        return
+    center = sh + torso * 0.22
+    # 胸部の位置は簡易推定。横向きの場合は細く描く。
+    half_width = max(8, shoulder_width * 0.43)
+    half_height = max(6, length * 0.17)
+    rotation = float(np.degrees(np.arctan2(torso[1], torso[0])) + 90)
+    overlay = frame.copy()
+    cv2.ellipse(
+        overlay,
+        tuple(np.rint(center).astype(int)),
+        (int(half_width), int(half_height)),
+        rotation, 0, 360, color, -1, cv2.LINE_AA
+    )
+    cv2.addWeighted(overlay, 0.38, frame, 0.62, 0, frame)
+
+
+def paint_muscles(frame, lms, exercise, cfg, w, h, display_angle):
+    """推定負荷の部位を色付け。姿勢が見えない部位は描かない。"""
+    label, color = effort_level(display_angle, cfg, exercise)
+    thickness = max(10, int(min(w, h) * 0.035))
+    if exercise == "ベンチプレス":
+        paint_chest(frame, lms, w, h, color)
+        for sh, elbow, wrist in ((11, 13, 15), (12, 14, 16)):
+            if reliable(lms, [sh, elbow]):
+                paint_segment(frame, xy(lms, sh, w, h), xy(lms, elbow, w, h), color, thickness)
+    elif exercise == "スクワット":
+        for hip, knee, ankle in ((23, 25, 27), (24, 26, 28)):
+            if reliable(lms, [hip, knee]):
+                paint_segment(frame, xy(lms, hip, w, h), xy(lms, knee, w, h), color, thickness + 6)
+            if reliable(lms, [hip, 11 if hip == 23 else 12]):
+                shoulder = 11 if hip == 23 else 12
+                hip_point = xy(lms, hip, w, h)
+                sh_point = xy(lms, shoulder, w, h)
+                # 臀部を股関節付近の円で示す
+                overlay = frame.copy()
+                cv2.circle(overlay, tuple(np.rint(hip_point).astype(int)), max(10, thickness // 2), color, -1, cv2.LINE_AA)
+                cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
+    else:
+        for sh, elbow, wrist in ((11, 13, 15), (12, 14, 16)):
+            if reliable(lms, [sh, elbow]):
+                paint_segment(frame, xy(lms, sh, w, h), xy(lms, elbow, w, h), color, thickness)
+    return label, color
 
 
 def evaluate_video(input_path, output_path, exercise, sensitivity, progress):
@@ -72,7 +162,6 @@ def evaluate_video(input_path, output_path, exercise, sensitivity, progress):
     if not writer.isOpened():
         cap.release()
         raise RuntimeError("出力動画を作成できません。")
-
     options = vision.PoseLandmarkerOptions(
         base_options=python.BaseOptions(model_asset_path=model_file()),
         running_mode=vision.RunningMode.VIDEO,
@@ -83,7 +172,6 @@ def evaluate_video(input_path, output_path, exercise, sensitivity, progress):
     )
     detector = vision.PoseLandmarker.create_from_options(options)
     every = max(1, round(fps / 15))
-    # 角度の上下動をヒステリシスで検出する。初期姿勢は屈曲・伸展どちらでもよい。
     phase = None
     observed_low = None
     observed_high = None
@@ -92,6 +180,7 @@ def evaluate_video(input_path, output_path, exercise, sensitivity, progress):
     history = []
     smooth = None
     last_angles = [None, None]
+    last_landmarks = None
     last_timestamp = -1
     idx = 0
     invalid_streak = 0
@@ -115,43 +204,45 @@ def evaluate_video(input_path, output_path, exercise, sensitivity, progress):
                 last_timestamp = timestamp
                 result = detector.detect_for_video(image, timestamp)
                 angles = [None, None]
-                if result.pose_landmarks:
-                    lms = result.pose_landmarks[0]
-                    angles = [landmark_angle(lms, t, w, h) for t in cfg["triples"]]
+                last_landmarks = result.pose_landmarks[0] if result.pose_landmarks else None
+                if last_landmarks is not None:
+                    angles = [landmark_angle(last_landmarks, t, w, h) for t in cfg["triples"]]
                 last_angles = angles
                 valid = [x for x in angles if x is not None]
                 if valid:
                     invalid_streak = 0
-                    # 左右両方が見える場合は平均、片側ならその角度を使用。
                     measured = float(np.mean(valid))
                     smooth = measured if smooth is None else 0.55 * measured + 0.45 * smooth
                     a = smooth
                     history.append({"秒": round(idx / fps, 2), "角度": round(a, 1)})
-                    observed_low = a if observed_low is None else min(observed_low, a)
-                    observed_high = a if observed_high is None else max(observed_high, a)
-                    # 最初の十分な屈曲または伸展を起点にする。
                     if phase is None:
                         if a <= low_threshold:
                             phase = "bent"
+                            observed_low = a
+                            observed_high = a
                         elif a >= high_threshold:
                             phase = "extended"
-                    elif phase == "extended" and a <= low_threshold:
-                        phase = "bent"
-                    elif phase == "bent" and a >= high_threshold:
-                        count += 1
-                        # 1回の動作中に観測した角度の最大・最小で評価。
-                        low_seen = observed_low if observed_low is not None else a
-                        high_seen = observed_high if observed_high is not None else a
-                        passed = low_seen <= cfg["good_low"] and high_seen >= cfg["good_high"]
-                        good += int(passed)
-                        bad += int(not passed)
-                        rows.append({"回数": count, "最小角度(°)": round(low_seen, 1), "最大角度(°)": round(high_seen, 1), "判定": "基準達成" if passed else "基準未達"})
-                        phase = "extended"
-                        observed_low = a
-                        observed_high = a
-                    # 直近サイクルの最大・最小のみ記録する。
-                    if phase is not None and (not rows or observed_low is not None):
-                        pass
+                            observed_low = a
+                            observed_high = a
+                    else:
+                        observed_low = min(observed_low, a)
+                        observed_high = max(observed_high, a)
+                        if phase == "extended" and a <= low_threshold:
+                            phase = "bent"
+                        elif phase == "bent" and a >= high_threshold:
+                            count += 1
+                            passed = observed_low <= cfg["good_low"] and observed_high >= cfg["good_high"]
+                            good += int(passed)
+                            bad += int(not passed)
+                            rows.append({
+                                "回数": count,
+                                "最小角度(°)": round(observed_low, 1),
+                                "最大角度(°)": round(observed_high, 1),
+                                "判定": "基準達成" if passed else "基準未達"
+                            })
+                            phase = "extended"
+                            observed_low = a
+                            observed_high = a
                 else:
                     invalid_streak += 1
                     if invalid_streak > 15:
@@ -159,15 +250,23 @@ def evaluate_video(input_path, output_path, exercise, sensitivity, progress):
                         phase = None
                         observed_low = None
                         observed_high = None
+                        last_landmarks = None
 
-            # 解析結果を動画上に重ねる。日本語はStreamlit側に表示し動画は英字にする。
+            load_label, load_color = effort_level(smooth, cfg, exercise)
+            if last_landmarks is not None and smooth is not None:
+                paint_muscles(frame, last_landmarks, exercise, cfg, w, h, smooth)
+
             overlay = frame.copy()
-            cv2.rectangle(overlay, (0, 0), (min(w, 355), 115), (15, 15, 15), -1)
-            cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
+            panel_w = min(w, 470)
+            cv2.rectangle(overlay, (0, 0), (panel_w, 155), (15, 15, 15), -1)
+            cv2.addWeighted(overlay, 0.62, frame, 0.38, 0, frame)
             angle_label = f"{smooth:.1f}" if smooth is not None else "--"
-            cv2.putText(frame, f"ANGLE: {angle_label} deg", (12, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.67, (255, 255, 255), 2)
-            cv2.putText(frame, f"REPS: {count}  OK: {good}  NG: {bad}", (12, 63), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (70, 255, 140), 2)
-            cv2.putText(frame, f"SIDE: {'BOTH' if all(x is not None for x in last_angles) else 'ONE' if any(x is not None for x in last_angles) else 'NONE'}", (12, 95), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+            cv2.putText(frame, f"ANGLE: {angle_label} deg", (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (255, 255, 255), 2)
+            cv2.putText(frame, f"REPS: {count}  OK: {good}  NG: {bad}", (12, 56), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (70, 255, 140), 2)
+            cv2.putText(frame, f"MUSCLE: {cfg['muscles']}", (12, 84), cv2.FONT_HERSHEY_SIMPLEX, 0.53, (255, 255, 255), 2)
+            cv2.putText(frame, f"LOAD STAGE: {load_label}", (12, 112), cv2.FONT_HERSHEY_SIMPLEX, 0.62, load_color, 2)
+            side_label = "BOTH" if all(x is not None for x in last_angles) else "ONE" if any(x is not None for x in last_angles) else "NONE"
+            cv2.putText(frame, f"SIDE: {side_label}", (12, 139), cv2.FONT_HERSHEY_SIMPLEX, 0.53, (255, 255, 255), 1)
             writer.write(frame)
             idx += 1
             if idx % 30 == 0 and total > 0:
@@ -188,7 +287,8 @@ def evaluate_video(input_path, output_path, exercise, sensitivity, progress):
 
 
 st.title("🏋️ 筋トレフォームAI")
-st.write("左右の関節を自動検出し、運動の曲げ伸ばしから回数を数えます。")
+st.write("左右の関節を自動検出し、回数カウントと筋肉の動作段階を色で表示します。")
+st.info("色の意味：🔴 赤＝高負荷の目安　🟡 黄＝中程度　🟢 緑＝低負荷の目安。実際の筋力・筋負荷を測定した結果ではありません。")
 exercise = st.selectbox("① 種目", list(CONFIG))
 sensitivity = st.slider("② 回数カウント感度（大きいほど小さい動きも数えやすい）", 0, 12, 5)
 uploaded = st.file_uploader("③ 動画を選択（90秒以内）", type=["mp4", "mov", "m4v"])
@@ -221,7 +321,7 @@ if uploaded is not None:
         a.metric("総回数", data["count"])
         b.metric("基準達成", data["good"])
         c.metric("基準未達", data["bad"])
-        st.subheader("評価動画")
+        st.subheader("筋肉の色付け・フォーム評価動画")
         st.video(video)
         st.download_button("評価動画をダウンロード", video, "form_evaluation.mp4", "video/mp4")
         if data["history"]:
@@ -236,4 +336,4 @@ if uploaded is not None:
         else:
             st.warning("0回の場合は、関節が見える角度で撮影するか、カウント感度を上げて再解析してください。")
 
-st.caption("※ 判定は関節角度に基づく簡易評価で、医療・運動指導の専門家による判定に代わるものではありません。")
+st.caption("※ 色は姿勢と関節角度から推定した動作段階の可視化です。筋活動・筋負荷の実測値ではありません。")
