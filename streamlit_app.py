@@ -137,6 +137,70 @@ def paint_muscles(frame, lms, exercise, cfg, w, h, display_angle):
     return label, color
 
 
+
+
+# フォーム点数は関節の可動域に基づく参考評価であり、医学的・競技的な判定ではありません。
+def score_rep(low_angle, high_angle, cfg, exercise):
+    low_gap = max(0.0, low_angle - cfg["good_low"])
+    high_gap = max(0.0, cfg["good_high"] - high_angle)
+    score = int(round(max(0, min(100, 100 - low_gap * 1.6 - high_gap * 1.6))))
+    tips = []
+    if low_gap > 0:
+        if exercise == "スクワット":
+            tips.append("しゃがみ込みが浅めです。無理のない範囲で膝を曲げる深さを確認しましょう。")
+        elif exercise == "ベンチプレス":
+            tips.append("肘の曲げが浅めです。撮影角度と可動域を確認しましょう。")
+        else:
+            tips.append("肘の曲げが浅めです。反動を使わずに曲げる動作を確認しましょう。")
+    if high_gap > 0:
+        if exercise == "スクワット":
+            tips.append("立ち上がり側の膝角度が基準に届いていません。姿勢を整えて動作しましょう。")
+        else:
+            tips.append("伸ばす側の肘角度が基準に届いていません。無理なく可動域を確認しましょう。")
+    if not tips:
+        tips.append("設定した関節角度の基準を満たしています。")
+    return score, tips
+
+
+def muscle_figure(exercise):
+    """正面・背面の簡略人体図。色は主働筋の位置の目安。"""
+    muscle_map = {
+        "ベンチプレス": {"chest", "triceps"},
+        "スクワット": {"quads", "glutes"},
+        "アームカール": {"biceps"},
+    }
+    active = muscle_map[exercise]
+    def color(part):
+        return "#f97316" if part in active else "#cbd5e1"
+    # それぞれの人体シルエットは簡略化した図形で、解剖学的な精密図ではありません。
+    pieces = []
+    for x, caption, back in [(100, "正面", False), (300, "背面", True)]:
+        pieces.append(f'<text x="{x}" y="24" text-anchor="middle" font-size="16" fill="#334155">{caption}</text>')
+        pieces.append(f'<circle cx="{x}" cy="52" r="19" fill="#e2e8f0" stroke="#64748b"/>')
+        pieces.append(f'<rect x="{x-31}" y="76" width="62" height="105" rx="19" fill="#e2e8f0" stroke="#64748b"/>')
+        for sign in (-1,1):
+            armx=x+sign*42
+            pieces.append(f'<rect x="{armx-11}" y="83" width="22" height="107" rx="11" fill="#e2e8f0" stroke="#64748b"/>')
+            legx=x+sign*17
+            pieces.append(f'<rect x="{legx-14}" y="175" width="28" height="130" rx="12" fill="#e2e8f0" stroke="#64748b"/>')
+            if not back:
+                pieces.append(f'<ellipse cx="{x+sign*15}" cy="105" rx="15" ry="16" fill="{color("chest")}"/>')
+                pieces.append(f'<ellipse cx="{armx}" cy="115" rx="8" ry="23" fill="{color("biceps")}"/>')
+                pieces.append(f'<rect x="{legx-11}" y="185" width="22" height="61" rx="10" fill="{color("quads")}"/>')
+            else:
+                pieces.append(f'<ellipse cx="{armx}" cy="120" rx="8" ry="23" fill="{color("triceps")}"/>')
+                pieces.append(f'<ellipse cx="{x+sign*15}" cy="181" rx="15" ry="19" fill="{color("glutes")}"/>')
+    return ('''<svg xmlns="http://www.w3.org/2000/svg" width="400" height="335" viewBox="0 0 400 335">
+      <rect width="400" height="335" rx="14" fill="#f8fafc"/>''' + "".join(pieces) +
+      '<circle cx="105" cy="322" r="6" fill="#f97316"/><text x="117" y="327" font-size="12" fill="#334155">主に使う筋肉</text>' +
+      '<circle cx="265" cy="322" r="6" fill="#cbd5e1"/><text x="277" y="327" font-size="12" fill="#334155">その他</text></svg>')
+
+MUSCLE_NAMES = {
+    "ベンチプレス": "大胸筋・上腕三頭筋",
+    "スクワット": "大腿四頭筋・大臀筋",
+    "アームカール": "上腕二頭筋",
+}
+
 def evaluate_video(input_path, output_path, exercise, sensitivity, progress):
     cfg = CONFIG[exercise]
     cap = cv2.VideoCapture(input_path)
@@ -238,7 +302,9 @@ def evaluate_video(input_path, output_path, exercise, sensitivity, progress):
                                 "回数": count,
                                 "最小角度(°)": round(observed_low, 1),
                                 "最大角度(°)": round(observed_high, 1),
-                                "判定": "基準達成" if passed else "基準未達"
+                                "判定": "基準達成" if passed else "基準未達",
+                                "フォーム点数": score_rep(observed_low, observed_high, cfg, exercise)[0],
+                                "改善アドバイス": " ".join(score_rep(observed_low, observed_high, cfg, exercise)[1])
                             })
                             phase = "extended"
                             observed_low = a
@@ -321,6 +387,24 @@ if uploaded is not None:
         a.metric("総回数", data["count"])
         b.metric("基準達成", data["good"])
         c.metric("基準未達", data["bad"])
+        st.subheader("フォーム点数と改善アドバイス")
+        if data["rows"]:
+            scores = [r["フォーム点数"] for r in data["rows"]]
+            avg_score = round(sum(scores) / len(scores))
+            st.metric("平均フォームスコア（100点満点）", f"{avg_score}点")
+            st.progress(avg_score / 100)
+            st.caption("点数は関節角度の可動域のみを用いた参考値です。左右差、体幹の安定性、痛みや安全性は採点対象外です。")
+            for r in data["rows"]:
+                if r["フォーム点数"] < 100:
+                    st.warning(f'{r["回数"]}回目（{r["フォーム点数"]}点）：{r["改善アドバイス"]}')
+            if all(r["フォーム点数"] == 100 for r in data["rows"]):
+                st.success("すべての回で設定した関節角度の基準を満たしました。")
+        else:
+            st.info("回数を検出できなかったため、フォーム点数は算出できません。")
+        st.subheader("主に使う筋肉の人体図")
+        st.image(muscle_figure(exercise).encode("utf-8"), use_container_width=False)
+        st.write(f"**対象筋肉：{MUSCLE_NAMES[exercise]}**")
+        st.caption("人体図は簡略模式図です。色は種目で主に使う筋肉の位置を示し、実際の筋活動や負荷量を測定したものではありません。")
         st.subheader("筋肉の色付け・フォーム評価動画")
         st.video(video)
         st.download_button("評価動画をダウンロード", video, "form_evaluation.mp4", "video/mp4")
