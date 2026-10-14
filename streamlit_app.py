@@ -1,3 +1,4 @@
+
 import os
 import tempfile
 import subprocess
@@ -70,6 +71,30 @@ def effort_level(angle, cfg, exercise):
     if angle < cfg["high"]:
         return "MID*", (0, 220, 255)
     return "LOW*", (55, 215, 65)
+
+
+def stable_load_level(angle, cfg, previous=None, margin=8):
+    """Hysteresis for display only; not a physiological load measurement."""
+    if angle is None:
+        return previous
+    low, high = cfg["low"], cfg["high"]
+    if previous is None:
+        return "HIGH" if angle <= low else "MID" if angle < high else "LOW"
+    if previous == "HIGH":
+        return "MID" if angle > low + margin else "HIGH"
+    if previous == "LOW":
+        return "MID" if angle < high - margin else "LOW"
+    if angle < low - margin:
+        return "HIGH"
+    if angle > high + margin:
+        return "LOW"
+    return "MID"
+
+
+def load_visual(level):
+    return {"HIGH": ("HIGH*", (40, 40, 245)),
+            "MID": ("MID*", (0, 220, 255)),
+            "LOW": ("LOW*", (55, 215, 65))}.get(level, ("UNKNOWN", (190, 190, 190)))
 
 
 def paint_segment(frame, a, b, color, thickness=18, alpha=0.48):
@@ -243,6 +268,9 @@ def evaluate_video(input_path, output_path, exercise, sensitivity, progress):
     rows = []
     history = []
     smooth = None
+    load_smooth = None
+    load_state = None
+    load_side = None
     last_angles = [None, None]
     last_landmarks = None
     last_timestamp = -1
@@ -278,6 +306,20 @@ def evaluate_video(input_path, output_path, exercise, sensitivity, progress):
                     measured = float(np.mean(valid))
                     smooth = measured if smooth is None else 0.55 * measured + 0.45 * smooth
                     a = smooth
+                    if exercise == "アームカール":
+                        # Prefer one continuously visible arm; avoid changing between two arms.
+                        if load_side is None or angles[load_side] is None:
+                            candidates = [i for i, v in enumerate(angles) if v is not None]
+                            if candidates:
+                                load_side = candidates[0]
+                        current = angles[load_side] if load_side is not None else None
+                        if current is not None:
+                            if load_smooth is None:
+                                load_smooth = current
+                            else:
+                                delta = np.clip(current - load_smooth, -18, 18)
+                                load_smooth += 0.20 * delta
+                            load_state = stable_load_level(load_smooth, cfg, load_state)
                     history.append({"秒": round(idx / fps, 2), "角度": round(a, 1)})
                     if phase is None:
                         if a <= low_threshold:
@@ -313,14 +355,28 @@ def evaluate_video(input_path, output_path, exercise, sensitivity, progress):
                     invalid_streak += 1
                     if invalid_streak > 15:
                         smooth = None
+                        load_smooth = None
+                        load_state = None
+                        load_side = None
                         phase = None
                         observed_low = None
                         observed_high = None
                         last_landmarks = None
 
-            load_label, load_color = effort_level(smooth, cfg, exercise)
+            if exercise == "アームカール":
+                load_label, load_color = load_visual(load_state)
+            else:
+                load_label, load_color = effort_level(smooth, cfg, exercise)
             if last_landmarks is not None and smooth is not None:
-                paint_muscles(frame, last_landmarks, exercise, cfg, w, h, smooth)
+                if exercise == "アームカール":
+                    # Use the stable display color rather than the raw angle classification.
+                    for sh, elbow in ((11, 13), (12, 14)):
+                        if reliable(last_landmarks, [sh, elbow]):
+                            paint_segment(frame, xy(last_landmarks, sh, w, h),
+                                          xy(last_landmarks, elbow, w, h), load_color,
+                                          max(10, int(min(w, h) * 0.035)))
+                else:
+                    paint_muscles(frame, last_landmarks, exercise, cfg, w, h, smooth)
 
             overlay = frame.copy()
             panel_w = min(w, 470)
@@ -402,11 +458,7 @@ if uploaded is not None:
         else:
             st.info("回数を検出できなかったため、フォーム点数は算出できません。")
         st.subheader("主に使う筋肉の人体図")
-        st.components.v1.html(
-    muscle_figure(exercise),
-    height=350,
-    scrolling=False
-)
+        st.components.v1.html(muscle_figure(exercise), height=350, scrolling=False)
         st.write(f"**対象筋肉：{MUSCLE_NAMES[exercise]}**")
         st.caption("人体図は簡略模式図です。色は種目で主に使う筋肉の位置を示し、実際の筋活動や負荷量を測定したものではありません。")
         st.subheader("筋肉の色付け・フォーム評価動画")
