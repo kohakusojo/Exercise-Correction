@@ -5,713 +5,235 @@ import tempfile
 import subprocess
 import urllib.request
 from pathlib import Path
-from functools import lru_cache
 
 import cv2
 import numpy as np
 import pandas as pd
-import mediapipe as mp
 import streamlit as st
-
-from PIL import Image, ImageDraw, ImageFont
+import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
+st.set_page_config(page_title="筋トレフォームAI", page_icon="🏋️", layout="wide")
 
-# ==============================================
-# 基本設定
-# ==============================================
-
-st.set_page_config(
-    page_title="筋トレフォームAI",
-    page_icon="🏋️",
-    layout="centered"
-)
-
-MAX_SIZE = 640
-ANALYSIS_FPS = 15
-MAX_SECONDS = 60
-VISIBILITY = 0.55
-
-MODEL_URL = (
-    "https://storage.googleapis.com/"
-    "mediapipe-models/pose_landmarker/"
-    "pose_landmarker_lite/float16/latest/"
-    "pose_landmarker_lite.task"
-)
-
-MODEL_PATH = Path(tempfile.gettempdir()) / "pose_landmarker_lite.task"
-
-FONT_PATH = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
-
-
-# ==============================================
-# 種目設定
-# ==============================================
-
-EXERCISES = {
-    "ベンチプレス": {
-        "indices": {
-            "右": (12, 14, 16),
-            "左": (11, 13, 15)
-        },
-        "joint": "肘",
-        "muscle": "大胸筋",
-        "min_range": (70, 100),
-        "max_range": (155, 175),
-        "bend": 110,
-        "extend": 145
-    },
-    "スクワット": {
-        "indices": {
-            "右": (24, 26, 28),
-            "左": (23, 25, 27)
-        },
-        "joint": "膝",
-        "muscle": "大腿四頭筋",
-        "min_range": (80, 100),
-        "max_range": (165, 180),
-        "bend": 115,
-        "extend": 155
-    },
-    "アームカール": {
-        "indices": {
-            "右": (12, 14, 16),
-            "左": (11, 13, 15)
-        },
-        "joint": "肘",
-        "muscle": "上腕二頭筋",
-        "min_range": (30, 40),
-        "max_range": (150, 160),
-        "bend": 60,
-        "extend": 140
-    }
+MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
+CONFIG = {
+    "ベンチプレス": {"triples": [(11, 13, 15), (12, 14, 16)], "low": 105, "high": 145, "good_low": 105, "good_high": 145, "joint": "肘"},
+    "スクワット": {"triples": [(23, 25, 27), (24, 26, 28)], "low": 120, "high": 155, "good_low": 110, "good_high": 155, "joint": "膝"},
+    "アームカール": {"triples": [(11, 13, 15), (12, 14, 16)], "low": 90, "high": 135, "good_low": 80, "good_high": 145, "joint": "肘"},
 }
 
-
-# ==============================================
-# モデル・フォント
-# ==============================================
-
-@st.cache_resource
-def get_model_path():
-    if not MODEL_PATH.exists() or MODEL_PATH.stat().st_size < 1000000:
-        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-    return str(MODEL_PATH)
+@st.cache_resource(show_spinner="姿勢推定モデルを準備中...")
+def model_file():
+    path = Path(tempfile.gettempdir()) / "form_pose_landmarker_lite.task"
+    if not path.exists() or path.stat().st_size < 1000000:
+        urllib.request.urlretrieve(MODEL_URL, path)
+    return str(path)
 
 
-@lru_cache(maxsize=32)
-def get_font(size):
-    if os.path.exists(FONT_PATH):
-        return ImageFont.truetype(FONT_PATH, size)
-    return ImageFont.load_default()
-
-
-# ==============================================
-# 計算関数
-# ==============================================
-
-def point_xy(lm, width, height):
-    return np.array([lm.x * width, lm.y * height], dtype=float)
-
-
-def reliable(landmarks, indices):
-    return all(
-        np.isfinite(landmarks[i].x)
-        and np.isfinite(landmarks[i].y)
-        and landmarks[i].visibility >= VISIBILITY
-        for i in indices
-    )
-
-
-def calculate_angle(a, b, c):
-    ab = np.asarray(a) - np.asarray(b)
-    cb = np.asarray(c) - np.asarray(b)
-
-    length = np.linalg.norm(ab) * np.linalg.norm(cb)
-    if length < 1e-8:
+def angle3(a, b, c):
+    u = a - b
+    v = c - b
+    denom = np.linalg.norm(u) * np.linalg.norm(v)
+    if denom < 1e-7:
         return None
-
-    cosine = np.clip(np.dot(ab, cb) / length, -1, 1)
-    return float(np.degrees(np.arccos(cosine)))
+    return float(np.degrees(np.arccos(np.clip(np.dot(u, v) / denom, -1, 1))))
 
 
-def calculate_score(angle, target):
-    if angle is None:
-        return 0
-    low, high = target
-    difference = max(low - angle, angle - high, 0)
-    return max(0, round(100 - 5 * difference))
-
-
-def get_load(angle, cfg):
-    # 色は角度による動作段階の目安
-    if angle >= cfg["extend"]:
-        return "低", (0, 255, 0)
-    if angle >= cfg["bend"]:
-        return "中", (0, 255, 255)
-    return "高", (0, 0, 255)
-
-
-def draw_text(frame, items):
-    image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    draw = ImageDraw.Draw(image)
-
-    for text, x, y, size, color in items:
-        draw.text(
-            (int(x), int(y)),
-            str(text),
-            font=get_font(int(size)),
-            fill=(color[2], color[1], color[0])
-        )
-
-    return cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR)
-
-
-# ==============================================
-# 胸上部の追跡
-# ==============================================
-
-def estimate_chest(landmarks, width, height):
-    ls = point_xy(landmarks[11], width, height)
-    rs = point_xy(landmarks[12], width, height)
-    lh = point_xy(landmarks[23], width, height)
-    rh = point_xy(landmarks[24], width, height)
-
-    shoulder = (ls + rs) / 2
-    hip = (lh + rh) / 2
-
-    torso = hip - shoulder
-    length = np.linalg.norm(torso)
-
-    if length < 15:
+def landmark_angle(lms, triple, w, h):
+    if any((not np.isfinite(lms[i].x) or not np.isfinite(lms[i].y) or lms[i].visibility < 0.40) for i in triple):
         return None
-
-    center = shoulder + torso * 0.12
-    shoulder_width = np.linalg.norm(rs - ls)
-
-    major = max(12, length * 0.22, shoulder_width * 0.38)
-    minor = max(6, length * 0.085)
-
-    rotation = math.degrees(math.atan2(torso[1], torso[0])) + 90
-
-    return np.array(
-        [center[0], center[1], major, minor, rotation],
-        dtype=float
-    )
+    points = [np.array([lms[i].x * w, lms[i].y * h], dtype=float) for i in triple]
+    return angle3(*points)
 
 
-def smooth_chest(previous, current, alpha=0.30):
-    if previous is None:
-        return current.copy()
-
-    result = previous.copy()
-    result[:4] = (1 - alpha) * previous[:4] + alpha * current[:4]
-
-    difference = (current[4] - previous[4] + 90) % 180 - 90
-    result[4] = previous[4] + alpha * difference
-
-    return result
-
-
-def draw_chest(frame, chest, color):
-    x, y, major, minor, rotation = chest
-    overlay = frame.copy()
-
-    cv2.ellipse(
-        overlay,
-        (int(x), int(y)),
-        (max(1, int(major)), max(1, int(minor))),
-        float(rotation),
-        0,
-        360,
-        color,
-        -1,
-        cv2.LINE_AA
-    )
-
-    cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
-
-
-def draw_limb(frame, points, color):
-    a, b, c = [tuple(p.astype(int)) for p in points]
-
-    overlay = frame.copy()
-    thickness = max(10, int(frame.shape[1] * 0.025))
-
-    cv2.line(overlay, a, b, color, thickness, cv2.LINE_AA)
-    cv2.addWeighted(overlay, 0.40, frame, 0.60, 0, frame)
-
-    cv2.line(frame, b, c, (255, 255, 255), 3, cv2.LINE_AA)
-
-    for p in (a, b, c):
-        cv2.circle(frame, p, 5, (255, 255, 255), -1)
-
-
-# ==============================================
-# 動画解析
-# ==============================================
-
-def process_video(input_path, output_path, exercise, side, progress):
-    cfg = EXERCISES[exercise]
-    indices = cfg["indices"][side]
-
+def evaluate_video(input_path, output_path, exercise, sensitivity, progress):
+    cfg = CONFIG[exercise]
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
-        raise RuntimeError("動画を開けませんでした")
-
-    source_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    source_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        raise RuntimeError("動画を読み込めません。MP4形式で再度お試しください。")
     fps = cap.get(cv2.CAP_PROP_FPS)
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    if source_w <= 0 or source_h <= 0:
-        cap.release()
-        raise RuntimeError("動画サイズを取得できません")
-
-    if not (1 <= fps <= 240):
+    if not np.isfinite(fps) or fps < 1 or fps > 240:
         fps = 30.0
-
-    if total > 0 and total / fps > MAX_SECONDS:
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total > 0 and total / fps > 90:
         cap.release()
-        raise RuntimeError("60秒以内の動画を選択してください")
-
-    scale = min(1.0, MAX_SIZE / max(source_w, source_h))
-    width = max(2, int(source_w * scale) // 2 * 2)
-    height = max(2, int(source_h * scale) // 2 * 2)
-
-    raw_path = os.path.join(os.path.dirname(output_path), "raw.mp4")
-
-    writer = cv2.VideoWriter(
-        raw_path,
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        fps,
-        (width, height)
-    )
-
+        raise RuntimeError("動画は90秒以内にしてください。")
+    orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if orig_w <= 0 or orig_h <= 0:
+        cap.release()
+        raise RuntimeError("動画のサイズを取得できません。")
+    factor = min(1.0, 640 / max(orig_w, orig_h))
+    w = max(2, int(orig_w * factor) // 2 * 2)
+    h = max(2, int(orig_h * factor) // 2 * 2)
+    temp_raw = str(Path(output_path).with_name("raw_video.mp4"))
+    writer = cv2.VideoWriter(temp_raw, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
     if not writer.isOpened():
         cap.release()
-        raise RuntimeError("動画の保存を開始できませんでした")
+        raise RuntimeError("出力動画を作成できません。")
 
     options = vision.PoseLandmarkerOptions(
-        base_options=python.BaseOptions(
-            model_asset_path=get_model_path()
-        ),
+        base_options=python.BaseOptions(model_asset_path=model_file()),
         running_mode=vision.RunningMode.VIDEO,
-        num_poses=1
+        num_poses=1,
+        min_pose_detection_confidence=0.4,
+        min_pose_presence_confidence=0.4,
+        min_tracking_confidence=0.4,
     )
-
-    landmarker = vision.PoseLandmarker.create_from_options(options)
-
-    interval = max(1, round(fps / ANALYSIS_FPS))
-
-    count = 0
-    good = 0
-    bad = 0
-    stage = "waiting"
-
-    bend_frames = 0
-    extend_frames = 0
-
-    smooth_angle = None
-    tracked_chest = None
-
-    overall_min = None
-    overall_max = None
-    rep_min = None
-    rep_max = None
-
-    display_angle = None
-    display_points = None
-    display_chest = None
-
-    last_result = "測定待ち"
-    results = []
-
-    index = 0
+    detector = vision.PoseLandmarker.create_from_options(options)
+    every = max(1, round(fps / 15))
+    # 角度の上下動をヒステリシスで検出する。初期姿勢は屈曲・伸展どちらでもよい。
+    phase = None
+    observed_low = None
+    observed_high = None
+    count = good = bad = 0
+    rows = []
+    history = []
+    smooth = None
+    last_angles = [None, None]
     last_timestamp = -1
+    idx = 0
+    invalid_streak = 0
+    low_threshold = cfg["low"] + sensitivity
+    high_threshold = cfg["high"] - sensitivity
+    if high_threshold - low_threshold < 15:
+        high_threshold = low_threshold + 15
 
     try:
         while True:
             ok, frame = cap.read()
             if not ok:
                 break
-
-            frame = cv2.resize(
-                frame, (width, height),
-                interpolation=cv2.INTER_AREA
-            )
-
-            # 姿勢推定は一定間隔で実行
-            if index % interval == 0:
+            if total <= 0 and idx / fps > 90:
+                raise RuntimeError("動画は90秒以内にしてください。")
+            frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_AREA)
+            if idx % every == 0:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-                mp_image = mp.Image(
-                    image_format=mp.ImageFormat.SRGB,
-                    data=np.ascontiguousarray(rgb)
-                )
-
-                timestamp = max(
-                    int(index * 1000 / fps),
-                    last_timestamp + 1
-                )
+                image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb))
+                timestamp = max(int(idx * 1000 / fps), last_timestamp + 1)
                 last_timestamp = timestamp
-
-                detection = landmarker.detect_for_video(
-                    mp_image, timestamp
-                )
-
-                display_angle = None
-                display_points = None
-                display_chest = None
-
-                if detection.pose_landmarks:
-                    landmarks = detection.pose_landmarks[0]
-
-                    if reliable(landmarks, indices):
-                        points = [
-                            point_xy(landmarks[i], width, height)
-                            for i in indices
-                        ]
-
-                        measured = calculate_angle(*points)
-
-                        if measured is not None:
-                            smooth_angle = (
-                                measured if smooth_angle is None
-                                else 0.4 * measured + 0.6 * smooth_angle
-                            )
-
-                            angle = smooth_angle
-                            display_angle = angle
-                            display_points = points
-
-                            overall_min = (
-                                angle if overall_min is None
-                                else min(overall_min, angle)
-                            )
-                            overall_max = (
-                                angle if overall_max is None
-                                else max(overall_max, angle)
-                            )
-
-                            if stage != "waiting":
-                                rep_min = (
-                                    angle if rep_min is None
-                                    else min(rep_min, angle)
-                                )
-                                rep_max = (
-                                    angle if rep_max is None
-                                    else max(rep_max, angle)
-                                )
-
-                            bend_frames = (
-                                bend_frames + 1
-                                if angle <= cfg["bend"] else 0
-                            )
-                            extend_frames = (
-                                extend_frames + 1
-                                if angle >= cfg["extend"] else 0
-                            )
-
-                            bent = bend_frames >= 2
-                            extended = extend_frames >= 2
-
-                            if stage == "waiting" and extended:
-                                stage = "extended"
-                                rep_min = angle
-                                rep_max = angle
-
-                            elif stage == "extended" and bent:
-                                stage = "bent"
-
-                            elif stage == "bent" and extended:
-                                count += 1
-
-                                passed = (
-                                    rep_min <= cfg["min_range"][1]
-                                    and rep_max >= cfg["max_range"][0]
-                                )
-
-                                if passed:
-                                    good += 1
-                                    last_result = "基準達成"
-                                else:
-                                    bad += 1
-                                    last_result = "基準未達"
-
-                                results.append({
-                                    "回数": count,
-                                    "最小角度": round(rep_min, 1),
-                                    "最大角度": round(rep_max, 1),
-                                    "最小スコア": calculate_score(
-                                        rep_min, cfg["min_range"]
-                                    ),
-                                    "最大スコア": calculate_score(
-                                        rep_max, cfg["max_range"]
-                                    ),
-                                    "判定": last_result
-                                })
-
-                                stage = "extended"
-                                rep_min = angle
-                                rep_max = angle
-                    else:
-                        bend_frames = 0
-                        extend_frames = 0
-
-                    if (
-                        exercise == "ベンチプレス"
-                        and display_angle is not None
-                        and reliable(landmarks, [11, 12, 23, 24])
-                    ):
-                        chest = estimate_chest(
-                            landmarks, width, height
-                        )
-                        if chest is not None:
-                            tracked_chest = smooth_chest(
-                                tracked_chest, chest
-                            )
-                            display_chest = tracked_chest.copy()
+                result = detector.detect_for_video(image, timestamp)
+                angles = [None, None]
+                if result.pose_landmarks:
+                    lms = result.pose_landmarks[0]
+                    angles = [landmark_angle(lms, t, w, h) for t in cfg["triples"]]
+                last_angles = angles
+                valid = [x for x in angles if x is not None]
+                if valid:
+                    invalid_streak = 0
+                    # 左右両方が見える場合は平均、片側ならその角度を使用。
+                    measured = float(np.mean(valid))
+                    smooth = measured if smooth is None else 0.55 * measured + 0.45 * smooth
+                    a = smooth
+                    history.append({"秒": round(idx / fps, 2), "角度": round(a, 1)})
+                    observed_low = a if observed_low is None else min(observed_low, a)
+                    observed_high = a if observed_high is None else max(observed_high, a)
+                    # 最初の十分な屈曲または伸展を起点にする。
+                    if phase is None:
+                        if a <= low_threshold:
+                            phase = "bent"
+                        elif a >= high_threshold:
+                            phase = "extended"
+                    elif phase == "extended" and a <= low_threshold:
+                        phase = "bent"
+                    elif phase == "bent" and a >= high_threshold:
+                        count += 1
+                        # 1回の動作中に観測した角度の最大・最小で評価。
+                        low_seen = observed_low if observed_low is not None else a
+                        high_seen = observed_high if observed_high is not None else a
+                        passed = low_seen <= cfg["good_low"] and high_seen >= cfg["good_high"]
+                        good += int(passed)
+                        bad += int(not passed)
+                        rows.append({"回数": count, "最小角度(°)": round(low_seen, 1), "最大角度(°)": round(high_seen, 1), "判定": "基準達成" if passed else "基準未達"})
+                        phase = "extended"
+                        observed_low = a
+                        observed_high = a
+                    # 直近サイクルの最大・最小のみ記録する。
+                    if phase is not None and (not rows or observed_low is not None):
+                        pass
                 else:
-                    bend_frames = 0
-                    extend_frames = 0
+                    invalid_streak += 1
+                    if invalid_streak > 15:
+                        smooth = None
+                        phase = None
+                        observed_low = None
+                        observed_high = None
 
-            white = (255, 255, 255)
-            green = (0, 255, 0)
-            red = (0, 0, 255)
-
-            if display_angle is not None:
-                load_text, load_color = get_load(
-                    display_angle, cfg
-                )
-                movement = (
-                    "伸展" if display_angle >= cfg["extend"]
-                    else "屈曲" if display_angle <= cfg["bend"]
-                    else "中間"
-                )
-            else:
-                load_text = "測定待ち"
-                load_color = white
-                movement = "測定待ち"
-
-            # 胸を先に描き、腕を上から描画
-            if display_chest is not None:
-                draw_chest(frame, display_chest, load_color)
-
-            if display_points is not None:
-                draw_limb(frame, display_points, load_color)
-
-            # 評価パネル
-            panel_scale = min(1.0, width / 850, height / 750)
-
+            # 解析結果を動画上に重ねる。日本語はStreamlit側に表示し動画は英字にする。
             overlay = frame.copy()
-            cv2.rectangle(
-                overlay,
-                (8, 8),
-                (
-                    int(620 * panel_scale),
-                    int(570 * panel_scale)
-                ),
-                (0, 0, 0),
-                -1
-            )
-            cv2.addWeighted(overlay, 0.38, frame, 0.62, 0, frame)
-
-            def fmt(value):
-                return f"{value:.1f}°" if value is not None else "--"
-
-            min_score = (
-                calculate_score(overall_min, cfg["min_range"])
-                if overall_min is not None else "--"
-            )
-            max_score = (
-                calculate_score(overall_max, cfg["max_range"])
-                if overall_max is not None else "--"
-            )
-
-            labels = [
-                (f"{exercise} フォーム評価", 25, 25, 30, white),
-                (
-                    f"現在の{cfg['joint']}角度：{fmt(display_angle)}",
-                    25, 75, 24, white
-                ),
-                (f"動作状態：{movement}", 25, 118, 24, load_color),
-                (
-                    f"{cfg['muscle']} 推定負荷：{load_text}",
-                    25, 161, 24, load_color
-                ),
-                (f"最小角度：{fmt(overall_min)}", 25, 216, 24, white),
-                (f"最小スコア：{min_score}/100", 25, 258, 24, white),
-                (f"最大角度：{fmt(overall_max)}", 25, 310, 24, white),
-                (f"最大スコア：{max_score}/100", 25, 352, 24, white),
-                (f"総回数：{count}回", 25, 402, 24, white),
-                (f"基準達成：{good}回", 25, 443, 24, green),
-                (f"基準未達：{bad}回", 25, 484, 24, red),
-                (f"前回の判定：{last_result}", 25, 525, 24, white)
-            ]
-
-            scaled_labels = [
-                (
-                    text,
-                    int(x * panel_scale),
-                    int(y * panel_scale),
-                    max(12, int(size * panel_scale)),
-                    color
-                )
-                for text, x, y, size, color in labels
-            ]
-
-            frame = draw_text(frame, scaled_labels)
+            cv2.rectangle(overlay, (0, 0), (min(w, 355), 115), (15, 15, 15), -1)
+            cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
+            angle_label = f"{smooth:.1f}" if smooth is not None else "--"
+            cv2.putText(frame, f"ANGLE: {angle_label} deg", (12, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.67, (255, 255, 255), 2)
+            cv2.putText(frame, f"REPS: {count}  OK: {good}  NG: {bad}", (12, 63), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (70, 255, 140), 2)
+            cv2.putText(frame, f"SIDE: {'BOTH' if all(x is not None for x in last_angles) else 'ONE' if any(x is not None for x in last_angles) else 'NONE'}", (12, 95), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
             writer.write(frame)
-
-            index += 1
-
-            if index % 15 == 0 and total > 0:
-                progress.progress(
-                    min(index / total, 0.94),
-                    text=f"解析中：{index}/{total}フレーム"
-                )
-
+            idx += 1
+            if idx % 30 == 0 and total > 0:
+                progress.progress(min(0.90, idx / total * 0.90), text="動画を解析中...")
     finally:
         cap.release()
         writer.release()
-        landmarker.close()
+        detector.close()
 
-    progress.progress(0.95, text="動画を変換中...")
-
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-i", raw_path,
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-crf", "28",
-            "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart",
-            output_path
-        ],
-        check=True
-    )
-
-    progress.progress(1.0, text="解析完了")
-
-    return {
-        "count": count,
-        "good": good,
-        "bad": bad,
-        "minimum": overall_min,
-        "maximum": overall_max,
-        "results": results
-    }
+    progress.progress(0.94, text="再生用の動画に変換中...")
+    subprocess.run([
+        "ffmpeg", "-y", "-loglevel", "error", "-i", temp_raw,
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart", output_path
+    ], check=True)
+    progress.progress(1.0, text="完了")
+    return {"count": count, "good": good, "bad": bad, "rows": rows, "history": history}
 
 
-# ==============================================
-# Streamlit画面
-# ==============================================
-
-st.title("🏋️ 筋トレフォーム評価システム")
-st.write("スマホで撮影した動画をAIで解析します。")
-
-exercise = st.selectbox(
-    "① 種目を選択",
-    list(EXERCISES.keys())
-)
-
-side = st.radio(
-    "② 評価する側を選択",
-    ["右", "左"],
-    horizontal=True
-)
-
-uploaded = st.file_uploader(
-    "③ 動画をアップロード",
-    type=["mp4", "mov", "m4v"]
-)
-
-st.caption("まずは5〜15秒程度の動画で試してください。")
-
+st.title("🏋️ 筋トレフォームAI")
+st.write("左右の関節を自動検出し、運動の曲げ伸ばしから回数を数えます。")
+exercise = st.selectbox("① 種目", list(CONFIG))
+sensitivity = st.slider("② 回数カウント感度（大きいほど小さい動きも数えやすい）", 0, 12, 5)
+uploaded = st.file_uploader("③ 動画を選択（90秒以内）", type=["mp4", "mov", "m4v"])
+st.caption("関節が見えるように、ベンチプレスとアームカールは斜め前・横、スクワットは横から撮影すると認識しやすくなります。")
 if uploaded is not None:
     st.video(uploaded)
-
-    if st.button(
-        "フォーム評価を開始",
-        type="primary",
-        use_container_width=True
-    ):
+    signature = (uploaded.name, uploaded.size, exercise, sensitivity)
+    if st.session_state.get("signature") != signature:
+        st.session_state.pop("evaluation", None)
+    if st.button("フォーム評価を開始", type="primary", use_container_width=True):
         try:
-            with tempfile.TemporaryDirectory() as tmp:
-                extension = Path(uploaded.name).suffix.lower()
-                input_path = os.path.join(tmp, "input" + extension)
-                output_path = os.path.join(tmp, "result.mp4")
-
-                with open(input_path, "wb") as f:
+            with tempfile.TemporaryDirectory() as folder:
+                src = os.path.join(folder, "input" + Path(uploaded.name).suffix.lower())
+                dst = os.path.join(folder, "evaluation.mp4")
+                with open(src, "wb") as f:
                     f.write(uploaded.getbuffer())
-
-                progress = st.progress(0)
-
-                with st.spinner("フォームを解析しています..."):
-                    summary = process_video(
-                        input_path,
-                        output_path,
-                        exercise,
-                        side,
-                        progress
-                    )
-
-                with open(output_path, "rb") as f:
-                    video_bytes = f.read()
-
-            st.session_state["result"] = {
-                "summary": summary,
-                "video": video_bytes
-            }
-
+                progress = st.progress(0, text="準備中...")
+                data = evaluate_video(src, dst, exercise, sensitivity, progress)
+                with open(dst, "rb") as f:
+                    video = f.read()
+            st.session_state["evaluation"] = (data, video)
+            st.session_state["signature"] = signature
         except Exception as e:
-            st.error(f"エラー：{e}")
+            st.error(f"解析できませんでした：{e}")
 
+    if st.session_state.get("signature") == signature and "evaluation" in st.session_state:
+        data, video = st.session_state["evaluation"]
+        st.success("解析完了")
+        a, b, c = st.columns(3)
+        a.metric("総回数", data["count"])
+        b.metric("基準達成", data["good"])
+        c.metric("基準未達", data["bad"])
+        st.subheader("評価動画")
+        st.video(video)
+        st.download_button("評価動画をダウンロード", video, "form_evaluation.mp4", "video/mp4")
+        if data["history"]:
+            st.subheader("関節角度の変化")
+            chart = pd.DataFrame(data["history"])
+            st.line_chart(chart.set_index("秒")["角度"])
+        if data["rows"]:
+            st.subheader("回数ごとの判定")
+            df = pd.DataFrame(data["rows"])
+            st.dataframe(df, hide_index=True)
+            st.download_button("CSVをダウンロード", df.to_csv(index=False).encode("utf-8-sig"), "form_results.csv", "text/csv")
+        else:
+            st.warning("0回の場合は、関節が見える角度で撮影するか、カウント感度を上げて再解析してください。")
 
-# ==============================================
-# 結果表示
-# ==============================================
-
-if "result" in st.session_state:
-    result = st.session_state["result"]
-    summary = result["summary"]
-
-    st.success("フォーム評価が完了しました！")
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("総回数", summary["count"])
-    c2.metric("基準達成", summary["good"])
-    c3.metric("基準未達", summary["bad"])
-
-    st.subheader("評価動画")
-    st.video(result["video"])
-
-    st.download_button(
-        "評価動画をダウンロード",
-        data=result["video"],
-        file_name="form_evaluation.mp4",
-        mime="video/mp4",
-        use_container_width=True
-    )
-
-    if summary["results"]:
-        st.subheader("回数ごとの評価")
-        df = pd.DataFrame(summary["results"])
-        st.dataframe(df, hide_index=True)
-
-        st.download_button(
-            "評価結果をCSVで保存",
-            data=df.to_csv(index=False).encode("utf-8-sig"),
-            file_name="evaluation.csv",
-            mime="text/csv"
-        )
-    else:
-        st.info("回数が検出されませんでした。")
-
-st.caption(
-    "※ 筋肉の色表示は関節角度に基づく推定であり、"
-    "実際の筋負荷を測定するものではありません。"
-)
+st.caption("※ 判定は関節角度に基づく簡易評価で、医療・運動指導の専門家による判定に代わるものではありません。")
