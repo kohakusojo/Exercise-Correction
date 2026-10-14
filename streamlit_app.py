@@ -1,4 +1,3 @@
-
 import os
 import tempfile
 import subprocess
@@ -271,6 +270,8 @@ def evaluate_video(input_path, output_path, exercise, sensitivity, progress):
     load_smooth = None
     load_state = None
     load_side = None
+    arm_overlay = None
+    arm_missing = 0
     last_angles = [None, None]
     last_landmarks = None
     last_timestamp = -1
@@ -320,6 +321,27 @@ def evaluate_video(input_path, output_path, exercise, sensitivity, progress):
                                 delta = np.clip(current - load_smooth, -18, 18)
                                 load_smooth += 0.20 * delta
                             load_state = stable_load_level(load_smooth, cfg, load_state)
+                    if exercise == "アームカール":
+                        # Track only the selected arm; reject sudden landmark jumps.
+                        pair = ((11, 13), (12, 14))[load_side] if load_side is not None else None
+                        if pair is not None and last_landmarks is not None and reliable(last_landmarks, pair, 0.65):
+                            candidate = np.stack([xy(last_landmarks, j, w, h) for j in pair])
+                            length = np.linalg.norm(candidate[0] - candidate[1])
+                            if 0.055 * min(w, h) < length < 0.42 * max(w, h):
+                                if arm_overlay is None:
+                                    arm_overlay = candidate
+                                    arm_missing = 0
+                                elif np.max(np.linalg.norm(candidate - arm_overlay, axis=1)) < 0.085 * max(w, h):
+                                    arm_overlay = 0.18 * candidate + 0.82 * arm_overlay
+                                    arm_missing = 0
+                                else:
+                                    arm_missing += 1
+                            else:
+                                arm_missing += 1
+                        else:
+                            arm_missing += 1
+                        if arm_missing > 5:
+                            arm_overlay = None
                     history.append({"秒": round(idx / fps, 2), "角度": round(a, 1)})
                     if phase is None:
                         if a <= low_threshold:
@@ -358,6 +380,8 @@ def evaluate_video(input_path, output_path, exercise, sensitivity, progress):
                         load_smooth = None
                         load_state = None
                         load_side = None
+                        arm_overlay = None
+                        arm_missing = 0
                         phase = None
                         observed_low = None
                         observed_high = None
@@ -369,12 +393,14 @@ def evaluate_video(input_path, output_path, exercise, sensitivity, progress):
                 load_label, load_color = effort_level(smooth, cfg, exercise)
             if last_landmarks is not None and smooth is not None:
                 if exercise == "アームカール":
-                    # Use the stable display color rather than the raw angle classification.
-                    for sh, elbow in ((11, 13), (12, 14)):
-                        if reliable(last_landmarks, [sh, elbow]):
-                            paint_segment(frame, xy(last_landmarks, sh, w, h),
-                                          xy(last_landmarks, elbow, w, h), load_color,
-                                          max(10, int(min(w, h) * 0.035)))
+                    # Draw only one tracked arm, not two noisy arm estimates.
+                    # Skip the overlay when tracking is uncertain.
+                    if arm_overlay is not None and arm_missing <= 3:
+                        sh_point, elbow_point = arm_overlay
+                        p1 = sh_point * 0.25 + elbow_point * 0.75
+                        p2 = sh_point * 0.75 + elbow_point * 0.25
+                        paint_segment(frame, p1, p2, load_color,
+                                      max(10, int(min(w, h) * 0.04)))
                 else:
                     paint_muscles(frame, last_landmarks, exercise, cfg, w, h, smooth)
 
