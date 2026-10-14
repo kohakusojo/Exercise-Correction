@@ -402,7 +402,11 @@ if uploaded is not None:
         else:
             st.info("回数を検出できなかったため、フォーム点数は算出できません。")
         st.subheader("主に使う筋肉の人体図")
-        st.image(muscle_figure(exercise).encode("utf-8"), use_container_width=False)
+        st.components.v1.html(
+    muscle_figure(exercise),
+    height=350,
+    scrolling=False
+)
         st.write(f"**対象筋肉：{MUSCLE_NAMES[exercise]}**")
         st.caption("人体図は簡略模式図です。色は種目で主に使う筋肉の位置を示し、実際の筋活動や負荷量を測定したものではありません。")
         st.subheader("筋肉の色付け・フォーム評価動画")
