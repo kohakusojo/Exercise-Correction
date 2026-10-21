@@ -194,7 +194,7 @@ def analyze(src, out, exercise, progress):
                             phase='down'; completed_depth.append(value)
                         elif phase=='down':
                             if completed_depth:
- 　　　　　　　　　　　　　　　　　completed_depth[-1]=min(completed_depth[-1],value)
+                                completed_depth[-1]=min(completed_depth[-1],value)
                             if value>=cfg['up']:
                                 reps+=1
                                 depth=completed_depth[-1] if completed_depth else value
