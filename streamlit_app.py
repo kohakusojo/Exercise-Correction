@@ -365,7 +365,7 @@ if 'analysis' in st.session_state:
     st.subheader('💪 使用する筋肉')
     left,right=st.columns([1,1])
     with left:
-                muscle_images = {
+        muscle_images = {
             "ベンチプレス": "muscle_bench.png",
             "スクワット": "muscle_squat.png",
             "アームカール": "muscle_curl.png"
