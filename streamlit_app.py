@@ -365,9 +365,15 @@ if 'analysis' in st.session_state:
     st.subheader('💪 使用する筋肉')
     left,right=st.columns([1,1])
     with left:
+                muscle_images = {
+            "ベンチプレス": "muscle_bench.png",
+            "スクワット": "muscle_squat.png",
+            "アームカール": "muscle_curl.png"
+        }
+
         st.image(
-            "muscle_reference.png.png",
-            caption="使用する筋肉の参考画像",
+            muscle_images[data["exercise"]],
+            caption="赤色：主に使用する筋肉",
             use_container_width=True
         )
     with right:
