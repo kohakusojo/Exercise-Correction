@@ -94,3 +94,22 @@ def stable_load_level(angle, cfg, previous=None, margin=8):
         return "MID" if angle > low + margin else "HIGH"
     if previous == "LOW":
         return "MID" if angle < high - margin else "LOW"
+    # メイン画面
+st.title("🏋️ 筋トレフォーム判定AI")
+st.write("動画から筋トレフォームを解析するアプリです。")
+
+exercise = st.selectbox(
+    "筋トレ種目を選択",
+    ["ベンチプレス", "スクワット", "アームカール"]
+)
+
+uploaded_file = st.file_uploader(
+    "筋トレ動画をアップロード",
+    type=["mp4", "mov", "m4v"]
+)
+
+if uploaded_file is not None:
+    st.video(uploaded_file)
+
+    if st.button("フォーム評価を開始"):
+        st.info("画面表示は正常です。動画解析機能はこれから接続します。")
