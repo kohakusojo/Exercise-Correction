@@ -15,8 +15,32 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 st.set_page_config(page_title='筋トレフォーム判定AI', page_icon='🏋️', layout='centered')
-st.markdown('''<style>.block-container{max-width:850px;padding-top:1rem;padding-bottom:2rem}div[data-testid="stMetric"]{border:1px solid #9995;border-radius:12px;padding:10px}@media(max-width:640px){.block-container{padding-left:1rem;padding-right:1rem}h1{font-size:1.7rem!important}}</style>''', unsafe_allow_html=True)
+st.markdown("""
+<style>
+.block-container {
+    max-width: 850px;
+    padding-top: 1rem;
+    padding-bottom: 2rem;
+}
 
+div[data-testid="stMetric"] {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 10px;
+}
+
+@media (max-width: 640px) {
+    .block-container {
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+    h1 {
+        font-size: 1.7rem !important;
+    }
+}
+</style>
+""", unsafe_allow_html=True)
 MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task'
 MAX_MB = 100
 MAX_SECONDS = 90
@@ -125,47 +149,67 @@ def select_side(lms, cfg, w, h, preferred=None):
 
 def draw_pose(frame, lms, exercise, value, side, reps, level):
     h, w = frame.shape[:2]
+
+    colors = {
+        'HIGH': (35, 45, 235),
+        'MID': (0, 215, 255),
+        'LOW': (65, 200, 70)
+    }
+
+    load_color = colors.get(level, (160, 160, 160))
+    base_color = (100, 180, 150)
+
+    if exercise == 'スクワット':
+        active_pairs = {
+            (23, 25), (25, 27),
+            (24, 26), (26, 28)
+        }
+    else:
+        active_pairs = {
+            (11, 13), (13, 15),
+            (12, 14), (14, 16)
+        }
+
     for a, b in CONNECTIONS:
-        if visible(lms, (a,b), .35):
-            p1=(int(lms[a].x*w),int(lms[a].y*h)); p2=(int(lms[b].x*w),int(lms[b].y*h))
-            cv2.line(frame,p1,p2,(80,230,150),3,cv2.LINE_AA)
-    for i in range(11,29):
-        if visible(lms,(i,),.35):
-            cv2.circle(frame,(int(lms[i].x*w),int(lms[i].y*h)),4,(255,255,255),-1,cv2.LINE_AA)
-    cv2.rectangle(frame,(0,0),(w,74),(15,25,38),-1)
-    cv2.putText(frame,f'REPS: {reps}',(12,29),cv2.FONT_HERSHEY_SIMPLEX,.8,(255,255,255),2)
-    cv2.putText(frame,f'ANGLE: {value:.0f} deg' if value is not None else 'ANGLE: --',(12,59),cv2.FONT_HERSHEY_SIMPLEX,.57,(255,255,255),2)
-    color={'HIGH':(50,70,235),'MID':(0,215,245),'LOW':(75,200,80)}.get(level,(150,150,150))
-    cv2.putText(frame,f'LOAD*: {level}',(max(12,w-195),29),cv2.FONT_HERSHEY_SIMPLEX,.53,color,2)
+        if visible(lms, (a, b), .35):
+            p1 = (int(lms[a].x*w), int(lms[a].y*h))
+            p2 = (int(lms[b].x*w), int(lms[b].y*h))
+
+            active = (a, b) in active_pairs
+            color = load_color if active else base_color
+
+            cv2.line(
+                frame, p1, p2, color,
+                7 if active else 3,
+                cv2.LINE_AA
+            )
+
+    for i in range(11, 29):
+        if visible(lms, (i,), .35):
+            cv2.circle(
+                frame,
+                (int(lms[i].x*w), int(lms[i].y*h)),
+                4, (255, 255, 255), -1
+            )
+
+    cv2.putText(
+        frame, f'REPS: {reps}', (12, 29),
+        cv2.FONT_HERSHEY_SIMPLEX, .8,
+        (255, 255, 255), 2, cv2.LINE_AA
+    )
+
+    label = (
+        f'ANGLE: {value:.0f} deg'
+        if value is not None else 'ANGLE: --'
+    )
+
+    cv2.putText(
+        frame, label, (12, 59),
+        cv2.FONT_HERSHEY_SIMPLEX, .57,
+        (255, 255, 255), 2, cv2.LINE_AA
+    )
+
     return frame
-
-
-    def muscle_diagram(exercise):
-        """Schematic only; not an anatomical or EMG measurement."""
-        canvas = np.full((390,330,3), (246,248,251), dtype=np.uint8)
-        ink=(95,110,125); active=(65,105,235)
-        cv2.circle(canvas,(165,48),28,ink,2,cv2.LINE_AA)
-        cv2.line(canvas,(165,77),(165,245),ink,4)
-        cv2.line(canvas,(116,103),(214,103),ink,3)
-        cv2.line(canvas,(116,103),(90,213),ink,7)
-        cv2.line(canvas,(214,103),(240,213),ink,7)
-        cv2.line(canvas,(165,245),(126,348),ink,9)
-        cv2.line(canvas,(165,245),(204,348),ink,9)
-        cv2.ellipse(canvas,(165,152),(55,78),0,0,360,ink,2)
-        if exercise == 'ベンチプレス':
-            cv2.ellipse(canvas,(145,128),(22,18),0,0,360,active,-1)
-            cv2.ellipse(canvas,(185,128),(22,18),0,0,360,active,-1)
-            cv2.line(canvas,(98,154),(91,200),active,13)
-            cv2.line(canvas,(232,154),(239,200),active,13)
-        elif exercise == 'アームカール':
-            cv2.line(canvas,(108,118),(98,164),active,17)
-            cv2.line(canvas,(222,118),(232,164),active,17)
-        else:
-            cv2.ellipse(canvas,(146,236),(19,21),0,0,360,active,-1)
-            cv2.ellipse(canvas,(184,236),(19,21),0,0,360,active,-1)
-            cv2.line(canvas,(156,260),(131,316),active,22)
-            cv2.line(canvas,(174,260),(199,316),active,22)
-        return cv2.cvtColor(canvas,cv2.COLOR_BGR2RGB)
 
 
 def normalize_video(src, dst):
@@ -236,7 +280,6 @@ def analyze(src, out, exercise, progress):
                                 phase='up'
                     draw_pose(frame,lms,exercise,value,side,reps,level)
                 else:
-                    cv2.rectangle(frame,(0,0),(w,48),(15,25,38),-1)
                     cv2.putText(frame,f'REPS: {reps} / NO POSE',(10,30),cv2.FONT_HERSHEY_SIMPLEX,.6,(255,255,255),2)
                 rows.append({'秒':round((frame_id-1)/fps,2),'角度':round(value,1) if value is not None else None,'側':side,'推定負荷':level,'回数':reps})
                 writer.write(frame)
@@ -319,10 +362,14 @@ if 'analysis' in st.session_state:
     st.subheader('💡 改善アドバイス')
     for message in result['advice']:
         st.write('・'+message)
-    st.subheader('💪 使用する筋肉（模式図）')
+    st.subheader('💪 使用する筋肉')
     left,right=st.columns([1,1])
     with left:
-        st.image(muscle_diagram(data['exercise']),caption='青色：主に使う筋肉の概略位置',use_container_width=True)
+        st.image(
+    "muscle_reference.png",
+    caption="使用する筋肉の参考画像",
+    use_container_width=True
+)
     with right:
         st.write('**主な使用部位：** '+cfg['muscles'])
         st.write('**測定した関節：** '+cfg['joint'])
