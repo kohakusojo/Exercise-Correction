@@ -44,6 +44,36 @@ def model_path():
             tmp.unlink(missing_ok=True)
     return str(target)
 
+def muscle_diagram(exercise):
+    import cv2
+    import numpy as np
+
+    img = np.full((400, 320, 3), 245, dtype=np.uint8)
+
+    # 人体の簡易図
+    cv2.circle(img, (160, 55), 25, (160, 160, 160), 2)
+    cv2.line(img, (160, 80), (160, 240), (160, 160, 160), 4)
+    cv2.line(img, (160, 110), (95, 180), (160, 160, 160), 4)
+    cv2.line(img, (160, 110), (225, 180), (160, 160, 160), 4)
+    cv2.line(img, (160, 240), (110, 350), (160, 160, 160), 4)
+    cv2.line(img, (160, 240), (210, 350), (160, 160, 160), 4)
+
+    blue = (255, 100, 0)
+
+    if exercise == "ベンチプレス":
+        cv2.circle(img, (140, 125), 18, blue, -1)
+        cv2.circle(img, (180, 125), 18, blue, -1)
+
+    elif exercise == "スクワット":
+        cv2.line(img, (145, 245), (110, 310), blue, 14)
+        cv2.line(img, (175, 245), (210, 310), blue, 14)
+
+    elif exercise == "アームカール":
+        cv2.line(img, (135, 125), (105, 165), blue, 12)
+        cv2.line(img, (185, 125), (215, 165), blue, 12)
+
+    return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
 
 def angle(a, b, c):
     a, b, c = np.asarray(a), np.asarray(b), np.asarray(c)
@@ -52,6 +82,7 @@ def angle(a, b, c):
     if den < 1e-8:
         return None
     return float(np.degrees(np.arccos(np.clip(np.dot(x,y)/den, -1, 1))))
+
 
 
 def visible(lms, ids, minimum=.45):
@@ -306,34 +337,4 @@ if 'analysis' in st.session_state:
         st.line_chart(result['csv'].set_index('秒')['角度'])
         st.dataframe(result['csv'].tail(30),use_container_width=True)
     st.caption('本アプリのフォーム採点は簡易的な関節角度ルールに基づく参考値です。安全性やトレーニング効果を保証するものではありません。')
-
-def muscle_diagram(exercise):
-    import cv2
-    import numpy as np
-
-    img = np.full((400, 320, 3), 245, dtype=np.uint8)
-
-    # 人体の簡易図
-    cv2.circle(img, (160, 55), 25, (160, 160, 160), 2)
-    cv2.line(img, (160, 80), (160, 240), (160, 160, 160), 4)
-    cv2.line(img, (160, 110), (95, 180), (160, 160, 160), 4)
-    cv2.line(img, (160, 110), (225, 180), (160, 160, 160), 4)
-    cv2.line(img, (160, 240), (110, 350), (160, 160, 160), 4)
-    cv2.line(img, (160, 240), (210, 350), (160, 160, 160), 4)
-
-    blue = (255, 100, 0)
-
-    if exercise == "ベンチプレス":
-        cv2.circle(img, (140, 125), 18, blue, -1)
-        cv2.circle(img, (180, 125), 18, blue, -1)
-
-    elif exercise == "スクワット":
-        cv2.line(img, (145, 245), (110, 310), blue, 14)
-        cv2.line(img, (175, 245), (210, 310), blue, 14)
-
-    elif exercise == "アームカール":
-        cv2.line(img, (135, 125), (105, 165), blue, 12)
-        cv2.line(img, (185, 125), (215, 165), blue, 12)
-
-    return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
