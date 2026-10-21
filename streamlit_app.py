@@ -249,7 +249,7 @@ if upload is not None:
         if st.button('▶ フォーム評価を開始',type='primary',use_container_width=True):
             progress=st.progress(0,text='動画を準備中…')
             try:
-　　　　　　　　with tempfile.TemporaryDirectory() as tmp:
+                with tempfile.TemporaryDirectory() as tmp:
                     folder=Path(tmp)
                     suffix=Path(upload.name).suffix.lower() or '.mp4'
                     original=folder/('input'+suffix)
