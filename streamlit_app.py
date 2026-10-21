@@ -278,7 +278,7 @@ if 'analysis' in st.session_state:
     st.divider(); st.subheader('📊 解析結果')
     a,b,c=st.columns(3)
     a.metric('合計回数',f"{result['reps']} 回")
-　　b.metric('基準達成',f"{result['valid']} 回")
+    b.metric('基準達成',f"{result['valid']} 回")
     c.metric('基準未達',f"{result['invalid']} 回")
     if result['score'] is not None:
         st.metric('フォーム評価（参考）',f"{result['score']} / 100 点")
