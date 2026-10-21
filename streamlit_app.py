@@ -365,8 +365,8 @@ if 'analysis' in st.session_state:
     st.subheader('💪 使用する筋肉')
     left,right=st.columns([1,1])
     with left:
-        st.image(
-    "muscle_reference.png",
+st.image(
+    "muscle_reference.png.png",
     caption="使用する筋肉の参考画像",
     use_container_width=True
 )
