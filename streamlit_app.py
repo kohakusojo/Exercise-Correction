@@ -220,7 +220,7 @@ def analyze(src, out, exercise, progress):
         score=None
     else:
         rep_score=(valid/reps)*100 if reps else 0
-　　　　tracking_score=min(100,detection_ratio*120)
+        tracking_score=min(100,detection_ratio*120)
         score=round(.8*rep_score+.2*tracking_score) if reps else None
     advice=[]
     if detection_ratio<.65:
