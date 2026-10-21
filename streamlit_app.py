@@ -165,7 +165,7 @@ def analyze(src, out, exercise, progress):
     options=vision.PoseLandmarkerOptions(base_options=python.BaseOptions(model_asset_path=model_path()),running_mode=vision.RunningMode.VIDEO,num_poses=1,min_pose_detection_confidence=.5,min_pose_presence_confidence=.5,min_tracking_confidence=.5)
     reps=0; valid=0; invalid=0; phase='up'; side=None; prev=None; smoothed=None
     min_angle=None; max_angle=None; angles=[]; rows=[]; last_ms=-1  
-frame_id=0; visible_frames=0; completed_depth=[]
+　　frame_id=0; visible_frames=0; completed_depth=[]
     try:
         with vision.PoseLandmarker.create_from_options(options) as detector:
             while True:
