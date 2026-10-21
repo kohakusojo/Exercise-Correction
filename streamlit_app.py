@@ -110,31 +110,31 @@ def draw_pose(frame, lms, exercise, value, side, reps, level):
 
 
     def muscle_diagram(exercise):
-    """Schematic only; not an anatomical or EMG measurement."""
-    canvas = np.full((390,330,3), (246,248,251), dtype=np.uint8)
-    ink=(95,110,125); active=(65,105,235)
-    cv2.circle(canvas,(165,48),28,ink,2,cv2.LINE_AA)
-    cv2.line(canvas,(165,77),(165,245),ink,4)
-    cv2.line(canvas,(116,103),(214,103),ink,3)
-    cv2.line(canvas,(116,103),(90,213),ink,7)
-    cv2.line(canvas,(214,103),(240,213),ink,7)
-    cv2.line(canvas,(165,245),(126,348),ink,9)
-    cv2.line(canvas,(165,245),(204,348),ink,9)
-    cv2.ellipse(canvas,(165,152),(55,78),0,0,360,ink,2)
-    if exercise == 'ベンチプレス':
-        cv2.ellipse(canvas,(145,128),(22,18),0,0,360,active,-1)
-        cv2.ellipse(canvas,(185,128),(22,18),0,0,360,active,-1)
-        cv2.line(canvas,(98,154),(91,200),active,13)
-        cv2.line(canvas,(232,154),(239,200),active,13)
-    elif exercise == 'アームカール':
-        cv2.line(canvas,(108,118),(98,164),active,17)
-        cv2.line(canvas,(222,118),(232,164),active,17)
-    else:
-        cv2.ellipse(canvas,(146,236),(19,21),0,0,360,active,-1)
-        cv2.ellipse(canvas,(184,236),(19,21),0,0,360,active,-1)
-        cv2.line(canvas,(156,260),(131,316),active,22)
-        cv2.line(canvas,(174,260),(199,316),active,22)
-    return cv2.cvtColor(canvas,cv2.COLOR_BGR2RGB)
+        """Schematic only; not an anatomical or EMG measurement."""
+        canvas = np.full((390,330,3), (246,248,251), dtype=np.uint8)
+        ink=(95,110,125); active=(65,105,235)
+        cv2.circle(canvas,(165,48),28,ink,2,cv2.LINE_AA)
+        cv2.line(canvas,(165,77),(165,245),ink,4)
+        cv2.line(canvas,(116,103),(214,103),ink,3)
+        cv2.line(canvas,(116,103),(90,213),ink,7)
+        cv2.line(canvas,(214,103),(240,213),ink,7)
+        cv2.line(canvas,(165,245),(126,348),ink,9)
+        cv2.line(canvas,(165,245),(204,348),ink,9)
+        cv2.ellipse(canvas,(165,152),(55,78),0,0,360,ink,2)
+        if exercise == 'ベンチプレス':
+            cv2.ellipse(canvas,(145,128),(22,18),0,0,360,active,-1)
+            cv2.ellipse(canvas,(185,128),(22,18),0,0,360,active,-1)
+            cv2.line(canvas,(98,154),(91,200),active,13)
+            cv2.line(canvas,(232,154),(239,200),active,13)
+        elif exercise == 'アームカール':
+            cv2.line(canvas,(108,118),(98,164),active,17)
+            cv2.line(canvas,(222,118),(232,164),active,17)
+        else:
+            cv2.ellipse(canvas,(146,236),(19,21),0,0,360,active,-1)
+            cv2.ellipse(canvas,(184,236),(19,21),0,0,360,active,-1)
+            cv2.line(canvas,(156,260),(131,316),active,22)
+            cv2.line(canvas,(174,260),(199,316),active,22)
+        return cv2.cvtColor(canvas,cv2.COLOR_BGR2RGB)
 
 
 def normalize_video(src, dst):
