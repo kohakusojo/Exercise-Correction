@@ -44,8 +44,8 @@ div[data-testid="stMetric"] {
 MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task'
 MAX_MB = 100
 MAX_SECONDS = 30
-MAX_WIDTH = 480
-FPS_LIMIT = 15
+MAX_WIDTH = 640
+FPS_LIMIT = 20
 
 CONFIG = {
     'ベンチプレス': {
@@ -192,27 +192,62 @@ def select_side(lms, cfg, w, h, preferred=None):
     return best[0], best[1]
 
 
-
 def smooth_pose_points(lms, previous, w, h):
-    """Smooth drawn skeleton only; keep raw landmarks for rep counting.
+    """関節座標のブレを抑えつつ、実際の動作には追従する。"""
 
-    Adaptive EMA suppresses stationary jitter while following deliberate motion.
-    Low-confidence points retain their last stable position briefly.
-    """
-    current = np.array([[lm.x, lm.y] for lm in lms], dtype=np.float32)
-    confidence = np.array([getattr(lm, 'visibility', 1.0) for lm in lms])
+    current = np.array(
+        [[lm.x, lm.y] for lm in lms],
+        dtype=np.float32
+    )
+
+    confidence = np.array(
+        [getattr(lm, 'visibility', 1.0) for lm in lms]
+    )
+
     if previous is None or previous.shape != current.shape:
         return current.copy()
 
     filtered = previous.copy()
+
     for i, point in enumerate(current):
-        if not np.all(np.isfinite(point)) or confidence[i] < 0.35:
+
+        if not np.all(np.isfinite(point)):
             continue
+
+        if confidence[i] < 0.5:
+            continue
+
         if not np.all(np.isfinite(previous[i])):
             filtered[i] = point
             continue
-        movement_px = np.linalg.norm((point - previous[i]) * [w, h])
-        # Stationary joints are smoothed strongly; moving joints follow quickly.
+
+        movement_px = np.linalg.norm(
+            (point - previous[i]) * [w, h]
+        )
+
+        # 微小なブレは無視する
+        if movement_px < 2.5:
+            continue
+
+        # 急激な位置変化を抑制する
+        if movement_px > 45:
+            alpha = 0.15
+
+        # ゆっくりした動作
+        elif movement_px < 10:
+            alpha = 0.25
+
+        # 通常の筋トレ動作
+        else:
+            alpha = 0.55
+
+        filtered[i] = (
+            previous[i]
+            + alpha * (point - previous[i])
+        )
+
+    return filtered
+
         alpha = float(np.clip(0.22 + movement_px / 55.0, 0.22, 0.80))
         filtered[i] = previous[i] + alpha * (point - previous[i])
     return filtered
