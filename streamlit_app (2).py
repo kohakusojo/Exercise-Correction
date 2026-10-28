@@ -139,7 +139,7 @@ def select_side(lms, cfg, w, h, preferred=None):
             options.append((side, value, visibility))
     if not options:
         return preferred, None
-    if preferred:
+    if preferred:  
         for side, value, _ in options:
             if side == preferred:
                 return side, value
@@ -147,42 +147,31 @@ def select_side(lms, cfg, w, h, preferred=None):
     return side, value
 
 
-def draw_pose(frame, lms, exercise, value, side, reps, level):
-    """Smooth drawn skeleton only; keep raw landmarks for rep counting."""
-    current = np.array(
-        [[lm.x, lm.y] for lm in lms],
-        dtype=np.float32
-    )
-    confidence = np.array([
-        getattr(lm, 'visibility', 1.0) for lm in lms
-    ])
+def smooth_pose_points(lms, previous, w, h):
+    """Smooth drawn skeleton only; keep raw landmarks for rep counting.
 
+    Adaptive EMA suppresses stationary jitter while following deliberate motion.
+    Low-confidence points retain their last stable position briefly.
+    """
+    current = np.array([[lm.x, lm.y] for lm in lms], dtype=np.float32)
+    confidence = np.array([getattr(lm, 'visibility', 1.0) for lm in lms])
     if previous is None or previous.shape != current.shape:
         return current.copy()
 
     filtered = previous.copy()
-
     for i, point in enumerate(current):
         if not np.all(np.isfinite(point)) or confidence[i] < 0.35:
             continue
-
         if not np.all(np.isfinite(previous[i])):
             filtered[i] = point
             continue
-
-        movement_px = np.linalg.norm(
-            (point - previous[i]) * [w, h]
-        )
-
-        alpha = float(np.clip(
-            0.22 + movement_px / 55.0,
-            0.22,
-            0.80
-        ))
-
+        movement_px = np.linalg.norm((point - previous[i]) * [w, h])
+        # Stationary joints are smoothed strongly; moving joints follow quickly.
+        alpha = float(np.clip(0.22 + movement_px / 55.0, 0.22, 0.80))
         filtered[i] = previous[i] + alpha * (point - previous[i])
-
     return filtered
+
+
 def draw_pose(frame, lms, exercise, value, side, reps, level, points):
     h, w = frame.shape[:2]
 
@@ -210,6 +199,7 @@ def draw_pose(frame, lms, exercise, value, side, reps, level, points):
         if visible(lms, (a, b), .35):
             p1 = (int(points[a, 0]*w), int(points[a, 1]*h))
             p2 = (int(points[b, 0]*w), int(points[b, 1]*h))
+
             active = (a, b) in active_pairs
             color = load_color if active else base_color
 
@@ -227,17 +217,17 @@ def draw_pose(frame, lms, exercise, value, side, reps, level, points):
                 4, (255, 255, 255), -1
             )
 
-    cv2.putText(
-        frame, f'REPS: {reps}', (12, 29),
-        cv2.FONT_HERSHEY_SIMPLEX, .8,
-        (255, 255, 255), 2, cv2.LINE_AA
-    )
 
     label = (
         f'ANGLE: {value:.0f} deg'
         if value is not None else 'ANGLE: --'
     )
 
+    label = (
+        f'ANGLE: {value:.0f} deg'
+        if value is not None else 'ANGLE: --'
+    )
+  
     cv2.putText(
         frame, label, (12, 59),
         cv2.FONT_HERSHEY_SIMPLEX, .57,
@@ -273,16 +263,13 @@ def analyze(src, out, exercise, progress):
     if not writer.isOpened():
         cap.release(); raise RuntimeError('解析結果の動画を書き出せません')
     options=vision.PoseLandmarkerOptions(base_options=python.BaseOptions(model_asset_path=model_path()),running_mode=vision.RunningMode.VIDEO,num_poses=1,min_pose_detection_confidence=.5,min_pose_presence_confidence=.5,min_tracking_confidence=.5)
-   reps=0; valid=0; invalid=0; phase='up'; side=None; prev=None; smoothed=None
-   min_angle=None; max_angle=None; angles=[]; rows=[]; last_ms=-1
-   frame_id=0; visible_frames=0; completed_depth=[]
-
-   # ⑤ 骨格のブレを抑えるための変数
-   previous_points = None
-   missed_pose_frames = 0
-
-   try:
-       with vision.PoseLandmarker.create_from_options(options) as detector:
+    reps=0; valid=0; invalid=0; phase='up'; side=None; prev=None; smoothed=None
+    min_angle=None; max_angle=None; angles=[]; rows=[]; last_ms=-1  
+    frame_id=0; visible_frames=0; completed_depth=[]
+    previous_points = None
+    missed_pose_frames = 0
+    try:
+        with vision.PoseLandmarker.create_from_options(options) as detector:
             while True:
                 ok, frame=cap.read()
                 if not ok:
@@ -296,9 +283,7 @@ def analyze(src, out, exercise, progress):
                 if result.pose_landmarks:
                     lms=result.pose_landmarks[0]
                     missed_pose_frames = 0
-　　　　　　　　　　　previous_points = smooth_pose_points(
-   　　　　　　　　　　　 lms, previous_points, w, h
-　　　　　　　　　　　)
+                    previous_points = smooth_pose_points(lms, previous_points, w, h)
                     side, raw=select_side(lms,cfg,w,h,side)
                     if raw is not None:
                         visible_frames+=1
@@ -316,18 +301,17 @@ def analyze(src, out, exercise, progress):
                                 completed_depth[-1]=min(completed_depth[-1],value)
                             if value>=cfg['up']:
                                 reps+=1
-                               draw_pose(frame,lms,exercise,value,side,reps,level,previous_points)
+                                depth=completed_depth[-1] if completed_depth else value
                                 if cfg['ideal_low']<=depth<=cfg['ideal_high']:
                                     valid+=1
                                 else:
                                     invalid+=1
                                 phase='up'
-                    draw_pose(frame,lms,exercise,value,side,reps,level)
+                    draw_pose(frame,lms,exercise,value,side,reps,level,previous_points)
                 else:
                     missed_pose_frames += 1
-　　　　　　　　　　　if missed_pose_frames >= 5:
-    　　　　　　　　　　　previous_points = None
-
+                    if missed_pose_frames >= 5:
+                        previous_points = None
                     cv2.putText(frame,f'REPS: {reps} / NO POSE',(10,30),cv2.FONT_HERSHEY_SIMPLEX,.6,(255,255,255),2)
                 rows.append({'秒':round((frame_id-1)/fps,2),'角度':round(value,1) if value is not None else None,'側':side,'推定負荷':level,'回数':reps})
                 writer.write(frame)
@@ -337,7 +321,7 @@ def analyze(src, out, exercise, progress):
         cap.release(); writer.release()
     if frame_id==0:
         raise RuntimeError('動画のフレームを読み取れませんでした')
-    detection_ratio=visible_frames/frame_id
+     detection_ratio=visible_frames/frame_id
     if visible_frames<max(8,frame_id*.12):
         score=None
     else:
@@ -360,13 +344,13 @@ def analyze(src, out, exercise, progress):
 st.title('🏋️ 筋トレフォーム判定AI')
 st.caption('動画から姿勢を推定し、回数・フォーム・使用筋肉を可視化します。スマホ対応。')
 exercise=st.selectbox('種目を選択',list(CONFIG.keys()))
-st.info('撮影のコツ：体の関節が隠れないように、明るい場所で横から撮影してください。90秒以内の動画を推奨します。')
+st.info('撮影のコツ：体の関節が隠れないように、明るい場所で横から撮影してください。30秒以内の動画を推奨します。')
 upload=st.file_uploader('筋トレ動画をアップロード',type=['mp4','mov','m4v','avi'],help='最大100MB。iPhoneのMOVにも対応します。')
 if upload is not None:
     st.write(f'選択したファイル：{upload.name}（{upload.size/1024/1024:.1f}MB）')
     if upload.size>MAX_MB*1024*1024:
         st.error(f'ファイルが大きすぎます。{MAX_MB}MB以下にしてください。')
-    else:
+    else:  
         st.video(upload)
         if st.button('▶ フォーム評価を開始',type='primary',use_container_width=True):
             progress=st.progress(0,text='動画を準備中…')
@@ -413,11 +397,17 @@ if 'analysis' in st.session_state:
     st.subheader('💪 使用する筋肉')
     left,right=st.columns([1,1])
     with left:
-        st.image(
-    "muscle_reference.png",
-    caption="使用する筋肉の参考画像",
-    use_container_width=True
-)
+        muscle_images = {
+            "ベンチプレス": "muscle_bench.png",
+            "スクワット": "muscle_squat.png",
+            "アームカール": "muscle_curl.png",
+        }
+        image_path = Path(__file__).resolve().parent / muscle_images[data['exercise']]
+        if image_path.is_file():
+            st.image(str(image_path), caption="赤色：主に使用する筋肉", use_container_width=True)
+        else:
+            st.image(muscle_diagram(data['exercise']), caption="使用筋肉の簡易図（参考）", use_container_width=True)
+            st.caption(f"画像 {image_path.name} が未配置のため簡易図を表示しています。")
     with right:
         st.write('**主な使用部位：** '+cfg['muscles'])
         st.write('**測定した関節：** '+cfg['joint'])
@@ -432,4 +422,3 @@ if 'analysis' in st.session_state:
         st.line_chart(result['csv'].set_index('秒')['角度'])
         st.dataframe(result['csv'].tail(30),use_container_width=True)
     st.caption('本アプリのフォーム採点は簡易的な関節角度ルールに基づく参考値です。安全性やトレーニング効果を保証するものではありません。')
-
