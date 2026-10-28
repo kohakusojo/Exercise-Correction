@@ -46,11 +46,40 @@ MAX_MB = 100
 MAX_SECONDS = 30
 MAX_WIDTH = 480
 FPS_LIMIT = 15
+
 CONFIG = {
-    'ベンチプレス': {'triples': ((11,13,15),(12,14,16)), 'down': 105, 'up': 150, 'ideal_low': 65, 'ideal_high': 115, 'joint':'肘', 'muscles':'大胸筋・上腕三頭筋', 'tip':'肘を左右均等に曲げ、肩甲骨を安定させましょう。'},
-    'スクワット': {'triples': ((23,25,27),(24,26,28)), 'down': 110, 'up': 155, 'ideal_low': 65, 'ideal_high': 115, 'joint':'膝', 'muscles':'大腿四頭筋・大殿筋', 'tip':'膝とつま先の向きをそろえ、背中を丸めずに動きましょう。'},
-    'アームカール': {'triples': ((11,13,15),(12,14,16)), 'down': 80, 'up': 145, 'ideal_low': 35, 'ideal_high': 85, 'joint':'肘', 'muscles':'上腕二頭筋', 'tip':'肘を体側で固定し、反動を使わずに動かしましょう。'},
+    'ベンチプレス': {
+        'triples': ((11, 13, 15), (12, 14, 16)),
+        'down': 125,
+        'up': 150,
+        'ideal_low': 65,
+        'ideal_high': 115,
+        'joint': '肘',
+        'muscles': '大胸筋・上腕三頭筋',
+        'tip': '肘を左右均等に曲げ、肩甲骨を安定させましょう。'
+    },
+    'スクワット': {
+        'triples': ((23, 25, 27), (24, 26, 28)),
+        'down': 135,
+        'up': 155,
+        'ideal_low': 65,
+        'ideal_high': 115,
+        'joint': '膝',
+        'muscles': '大腿四頭筋・大殿筋',
+        'tip': '膝とつま先の向きをそろえ、背中を丸めずに動きましょう。'
+    },
+    'アームカール': {
+        'triples': ((11, 13, 15), (12, 14, 16)),
+        'down': 110,
+        'up': 145,
+        'ideal_low': 35,
+        'ideal_high': 85,
+        'joint': '肘',
+        'muscles': '上腕二頭筋',
+        'tip': '肘を体側で固定し、反動を使わずに動かしましょう。'
+    }
 }
+
 # MediaPipe landmark indices: shoulder 11/12, elbow 13/14, wrist 15/16, hip 23/24, knee 25/26, ankle 27/28.
 CONNECTIONS = [(11,12),(11,13),(13,15),(12,14),(14,16),(11,23),(12,24),(23,24),(23,25),(25,27),(24,26),(26,28)]
 
@@ -130,21 +159,38 @@ def load_state(value, cfg, old=None, margin=7):
     return 'HIGH' if value <= low else 'MID' if value < high else 'LOW'
 
 
+
 def select_side(lms, cfg, w, h, preferred=None):
     options = []
-    for side, triple in zip(('左','右'), cfg['triples']):
+
+    for side, triple in zip(('左', '右'), cfg['triples']):
         value = joint_angle(lms, triple, w, h)
+
         if value is not None:
-            visibility = sum(getattr(lms[i], 'visibility', 1.0) for i in triple)
-            options.append((side, value, visibility))
+            confidence = min(
+                getattr(lms[i], 'visibility', 1.0)
+                for i in triple
+            )
+            options.append((side, value, confidence))
+
     if not options:
         return preferred, None
-    if preferred:  
-        for side, value, _ in options:
-            if side == preferred:
-                return side, value
-    side, value, _ = max(options, key=lambda item: item[2])
-    return side, value
+
+    best = max(options, key=lambda x: x[2])
+
+    if preferred is not None:
+        for item in options:
+            if item[0] == preferred:
+                # 現在の側が十分見えている間は維持する
+                if item[2] >= 0.65:
+                    return item[0], item[1]
+
+                # 切替先が十分に信頼できる場合だけ変更
+                if best[2] < 0.75:
+                    return preferred, None
+
+    return best[0], best[1]
+
 
 
 def smooth_pose_points(lms, previous, w, h):
@@ -217,12 +263,6 @@ def draw_pose(frame, lms, exercise, value, side, reps, level, points):
                 4, (255, 255, 255), -1
             )
 
-
-    label = (
-        f'ANGLE: {value:.0f} deg'
-        if value is not None else 'ANGLE: --'
-    )
-
     label = (
         f'ANGLE: {value:.0f} deg'
         if value is not None else 'ANGLE: --'
@@ -284,7 +324,15 @@ def analyze(src, out, exercise, progress):
                     lms=result.pose_landmarks[0]
                     missed_pose_frames = 0
                     previous_points = smooth_pose_points(lms, previous_points, w, h)
-                    side, raw=select_side(lms,cfg,w,h,side)
+                   old_side = side
+                   side, raw = select_side(lms, cfg, w, h, side)
+
+                   if old_side is not None and side != old_side:
+                        smoothed = None
+                        prev = None
+                        phase = 'up'
+                        rep_min_angle = None
+                        down_frames = 0
                     if raw is not None:
                         visible_frames+=1
                         smoothed=raw if smoothed is None else .65*smoothed+.35*raw
@@ -321,7 +369,7 @@ def analyze(src, out, exercise, progress):
         cap.release(); writer.release()
     if frame_id==0:
         raise RuntimeError('動画のフレームを読み取れませんでした')
-     detection_ratio=visible_frames/frame_id
+    detection_ratio=visible_frames/frame_id
     if visible_frames<max(8,frame_id*.12):
         score=None
     else:
