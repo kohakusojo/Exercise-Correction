@@ -298,11 +298,28 @@ def draw_pose(frame, lms, exercise, value, side, reps, level, points):
         if value is not None else 'ANGLE: --'
     )
   
-    cv2.putText(
-        frame, label, (12, 59),
-        cv2.FONT_HERSHEY_SIMPLEX, .57,
-        (0, 0, 0), 2, cv2.LINE_AA
-    )
+   
+    # 回数・角度・負荷レベルの表示
+    texts = [
+        (f'REPS: {reps}', 30, (255, 255, 255)),
+        (label, 59, (255, 255, 255)),
+        (f'LEVEL: {level}', 88, load_color)
+    ]
+
+    for text, y, color in texts:
+        # 黒い縁取り
+        cv2.putText(
+            frame, text, (12, y),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+            (0, 0, 0), 5, cv2.LINE_AA
+        )
+
+        # 文字本体
+        cv2.putText(
+            frame, text, (12, y),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+            color, 2, cv2.LINE_AA
+        )
 
     return frame
 
