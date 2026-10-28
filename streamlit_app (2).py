@@ -366,7 +366,7 @@ def analyze(src, out, exercise, progress):
                         max_angle=value if max_angle is None else max(max_angle,value)
                         prev=load_state(value,cfg,prev)
                         level=prev
-                       if phase == 'up':
+                        if phase == 'up':
                             if value <= cfg['down']:
                                 down_frames += 1
                             else:
