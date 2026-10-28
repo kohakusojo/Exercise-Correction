@@ -248,6 +248,9 @@ def smooth_pose_points(lms, previous, w, h):
 
     return filtered
 
+
+def draw_pose(frame, lms, exercise, value, side, reps, level, points):
+
 def draw_pose(frame, lms, exercise, value, side, reps, level, points):
     h, w = frame.shape[:2]
 
