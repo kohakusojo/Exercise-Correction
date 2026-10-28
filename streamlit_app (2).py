@@ -43,9 +43,9 @@ div[data-testid="stMetric"] {
 """, unsafe_allow_html=True)
 MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task'
 MAX_MB = 100
-MAX_SECONDS = 90
-MAX_WIDTH = 640
-FPS_LIMIT = 24
+MAX_SECONDS = 30
+MAX_WIDTH = 480
+FPS_LIMIT = 15
 CONFIG = {
     'ベンチプレス': {'triples': ((11,13,15),(12,14,16)), 'down': 105, 'up': 150, 'ideal_low': 65, 'ideal_high': 115, 'joint':'肘', 'muscles':'大胸筋・上腕三頭筋', 'tip':'肘を左右均等に曲げ、肩甲骨を安定させましょう。'},
     'スクワット': {'triples': ((23,25,27),(24,26,28)), 'down': 110, 'up': 155, 'ideal_low': 65, 'ideal_high': 115, 'joint':'膝', 'muscles':'大腿四頭筋・大殿筋', 'tip':'膝とつま先の向きをそろえ、背中を丸めずに動きましょう。'},
