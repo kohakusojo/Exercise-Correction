@@ -148,6 +148,42 @@ def select_side(lms, cfg, w, h, preferred=None):
 
 
 def draw_pose(frame, lms, exercise, value, side, reps, level):
+    """Smooth drawn skeleton only; keep raw landmarks for rep counting."""
+    current = np.array(
+        [[lm.x, lm.y] for lm in lms],
+        dtype=np.float32
+    )
+    confidence = np.array([
+        getattr(lm, 'visibility', 1.0) for lm in lms
+    ])
+
+    if previous is None or previous.shape != current.shape:
+        return current.copy()
+
+    filtered = previous.copy()
+
+    for i, point in enumerate(current):
+        if not np.all(np.isfinite(point)) or confidence[i] < 0.35:
+            continue
+
+        if not np.all(np.isfinite(previous[i])):
+            filtered[i] = point
+            continue
+
+        movement_px = np.linalg.norm(
+            (point - previous[i]) * [w, h]
+        )
+
+        alpha = float(np.clip(
+            0.22 + movement_px / 55.0,
+            0.22,
+            0.80
+        ))
+
+        filtered[i] = previous[i] + alpha * (point - previous[i])
+
+    return filtered
+def draw_pose(frame, lms, exercise, value, side, reps, level, points):
     h, w = frame.shape[:2]
 
     colors = {
@@ -172,9 +208,8 @@ def draw_pose(frame, lms, exercise, value, side, reps, level):
 
     for a, b in CONNECTIONS:
         if visible(lms, (a, b), .35):
-            p1 = (int(lms[a].x*w), int(lms[a].y*h))
-            p2 = (int(lms[b].x*w), int(lms[b].y*h))
-
+            p1 = (int(points[a, 0]*w), int(points[a, 1]*h))
+            p2 = (int(points[b, 0]*w), int(points[b, 1]*h))
             active = (a, b) in active_pairs
             color = load_color if active else base_color
 
@@ -188,7 +223,7 @@ def draw_pose(frame, lms, exercise, value, side, reps, level):
         if visible(lms, (i,), .35):
             cv2.circle(
                 frame,
-                (int(lms[i].x*w), int(lms[i].y*h)),
+                (int(points[i, 0]*w), int(points[i, 1]*h)),
                 4, (255, 255, 255), -1
             )
 
@@ -238,11 +273,16 @@ def analyze(src, out, exercise, progress):
     if not writer.isOpened():
         cap.release(); raise RuntimeError('解析結果の動画を書き出せません')
     options=vision.PoseLandmarkerOptions(base_options=python.BaseOptions(model_asset_path=model_path()),running_mode=vision.RunningMode.VIDEO,num_poses=1,min_pose_detection_confidence=.5,min_pose_presence_confidence=.5,min_tracking_confidence=.5)
-    reps=0; valid=0; invalid=0; phase='up'; side=None; prev=None; smoothed=None
-    min_angle=None; max_angle=None; angles=[]; rows=[]; last_ms=-1  
-    frame_id=0; visible_frames=0; completed_depth=[]
-    try:
-        with vision.PoseLandmarker.create_from_options(options) as detector:
+   reps=0; valid=0; invalid=0; phase='up'; side=None; prev=None; smoothed=None
+   min_angle=None; max_angle=None; angles=[]; rows=[]; last_ms=-1
+   frame_id=0; visible_frames=0; completed_depth=[]
+
+   # ⑤ 骨格のブレを抑えるための変数
+   previous_points = None
+   missed_pose_frames = 0
+
+   try:
+       with vision.PoseLandmarker.create_from_options(options) as detector:
             while True:
                 ok, frame=cap.read()
                 if not ok:
@@ -255,6 +295,10 @@ def analyze(src, out, exercise, progress):
                 value=None; level='UNKNOWN'
                 if result.pose_landmarks:
                     lms=result.pose_landmarks[0]
+                    missed_pose_frames = 0
+　　　　　　　　　　　previous_points = smooth_pose_points(
+   　　　　　　　　　　　 lms, previous_points, w, h
+　　　　　　　　　　　)
                     side, raw=select_side(lms,cfg,w,h,side)
                     if raw is not None:
                         visible_frames+=1
@@ -272,7 +316,7 @@ def analyze(src, out, exercise, progress):
                                 completed_depth[-1]=min(completed_depth[-1],value)
                             if value>=cfg['up']:
                                 reps+=1
-                                depth=completed_depth[-1] if completed_depth else value
+                               draw_pose(frame,lms,exercise,value,side,reps,level,previous_points)
                                 if cfg['ideal_low']<=depth<=cfg['ideal_high']:
                                     valid+=1
                                 else:
@@ -280,6 +324,10 @@ def analyze(src, out, exercise, progress):
                                 phase='up'
                     draw_pose(frame,lms,exercise,value,side,reps,level)
                 else:
+                    missed_pose_frames += 1
+　　　　　　　　　　　if missed_pose_frames >= 5:
+    　　　　　　　　　　　previous_points = None
+
                     cv2.putText(frame,f'REPS: {reps} / NO POSE',(10,30),cv2.FONT_HERSHEY_SIMPLEX,.6,(255,255,255),2)
                 rows.append({'秒':round((frame_id-1)/fps,2),'角度':round(value,1) if value is not None else None,'側':side,'推定負荷':level,'回数':reps})
                 writer.write(frame)
