@@ -271,7 +271,7 @@ def draw_pose(frame, lms, exercise, value, side, reps, level, points):
     cv2.putText(
         frame, label, (12, 59),
         cv2.FONT_HERSHEY_SIMPLEX, .57,
-        (255, 255, 255), 2, cv2.LINE_AA
+        (0, 0, 0), 2, cv2.LINE_AA
     )
 
     return frame
