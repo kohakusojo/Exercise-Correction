@@ -303,11 +303,32 @@ def analyze(src, out, exercise, progress):
     if not writer.isOpened():
         cap.release(); raise RuntimeError('解析結果の動画を書き出せません')
     options=vision.PoseLandmarkerOptions(base_options=python.BaseOptions(model_asset_path=model_path()),running_mode=vision.RunningMode.VIDEO,num_poses=1,min_pose_detection_confidence=.5,min_pose_presence_confidence=.5,min_tracking_confidence=.5)
-    reps=0; valid=0; invalid=0; phase='up'; side=None; prev=None; smoothed=None
-    min_angle=None; max_angle=None; angles=[]; rows=[]; last_ms=-1  
-    frame_id=0; visible_frames=0; completed_depth=[]
+    reps = 0
+    valid = 0
+    invalid = 0
+
+    phase = 'up'
+    side = None
+    prev = None
+    smoothed = None
+
+    min_angle = None
+    max_angle = None
+    angles = []
+    rows = []
+    last_ms = -1
+
+    frame_id = 0
+    visible_frames = 0
     previous_points = None
     missed_pose_frames = 0
+
+    rep_min_angle = None
+    down_frames = 0
+    up_frames = 0
+    missing_angle_frames = 0
+
+    STABLE_FRAMES = 3
     try:
         with vision.PoseLandmarker.create_from_options(options) as detector:
             while True:
@@ -324,15 +345,18 @@ def analyze(src, out, exercise, progress):
                     lms=result.pose_landmarks[0]
                     missed_pose_frames = 0
                     previous_points = smooth_pose_points(lms, previous_points, w, h)
-                   old_side = side
-                   side, raw = select_side(lms, cfg, w, h, side)
+                    old_side = side
+                    side, raw = select_side(
+                        lms, cfg, w, h, side
+                    )
 
-                   if old_side is not None and side != old_side:
+                    if old_side is not None and side != old_side:
                         smoothed = None
                         prev = None
                         phase = 'up'
                         rep_min_angle = None
                         down_frames = 0
+                        up_frames = 0
                     if raw is not None:
                         visible_frames+=1
                         smoothed=raw if smoothed is None else .65*smoothed+.35*raw
@@ -342,19 +366,44 @@ def analyze(src, out, exercise, progress):
                         max_angle=value if max_angle is None else max(max_angle,value)
                         prev=load_state(value,cfg,prev)
                         level=prev
-                        if phase=='up' and value<=cfg['down']:
-                            phase='down'; completed_depth.append(value)
-                        elif phase=='down':
-                            if completed_depth:
-                                completed_depth[-1]=min(completed_depth[-1],value)
-                            if value>=cfg['up']:
-                                reps+=1
-                                depth=completed_depth[-1] if completed_depth else value
-                                if cfg['ideal_low']<=depth<=cfg['ideal_high']:
-                                    valid+=1
+                       if phase == 'up':
+                            if value <= cfg['down']:
+                                down_frames += 1
+                            else:
+                                down_frames = 0
+
+                            if down_frames >= STABLE_FRAMES:
+                                phase = 'down'
+                                rep_min_angle = value
+                                down_frames = 0
+                                up_frames = 0
+
+                        elif phase == 'down':
+                            rep_min_angle = min(
+                                rep_min_angle, value
+                            )
+
+                            if value >= cfg['up']:
+                                up_frames += 1
+                            else:
+                                up_frames = 0
+
+                            if up_frames >= STABLE_FRAMES:
+                                reps += 1
+
+                                if (
+                                    cfg['ideal_low']
+                                    <= rep_min_angle
+                                    <= cfg['ideal_high']
+                                ):
+                                    valid += 1
                                 else:
-                                    invalid+=1
-                                phase='up'
+                                    invalid += 1
+
+                                phase = 'up'
+                                rep_min_angle = None
+                                down_frames = 0
+                                up_frames = 0
                     draw_pose(frame,lms,exercise,value,side,reps,level,previous_points)
                 else:
                     missed_pose_frames += 1
