@@ -248,11 +248,6 @@ def smooth_pose_points(lms, previous, w, h):
 
     return filtered
 
-        alpha = float(np.clip(0.22 + movement_px / 55.0, 0.22, 0.80))
-        filtered[i] = previous[i] + alpha * (point - previous[i])
-    return filtered
-
-
 def draw_pose(frame, lms, exercise, value, side, reps, level, points):
     h, w = frame.shape[:2]
 
