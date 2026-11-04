@@ -3,3 +3,4 @@ mediapipe==0.10.30
 opencv-python-headless==4.14.0.94
 numpy>=2.0,<3
 pandas>=2.2,<3
+scikit-learn
