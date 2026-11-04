@@ -351,7 +351,7 @@ def draw_pose(frame, lms, exercise, value, side, reps, level, points):
                 4, (255, 255, 255), -1
             )
 
-     label = (
+    label = (
         f'ANGLE: {value:.0f} deg'
         if value is not None else 'ANGLE: --'
     )
