@@ -171,7 +171,7 @@ def muscle_diagram(exercise):
 
     blue = (255, 100, 0)
 
-　　if exercise == "ベンチプレス":
+    if exercise == "ベンチプレス":
         cv2.circle(img, (140, 125), 18, blue, -1)
         cv2.circle(img, (180, 125), 18, blue, -1)
 
@@ -231,7 +231,7 @@ def select_side(lms, cfg, w, h, preferred=None):
             )
             options.append((side, value, confidence))
 
-　　　if not options:
+    if not options:
         return preferred, None
 
     best = max(options, key=lambda x: x[2])
@@ -299,7 +299,7 @@ def smooth_pose_points(lms, previous, w, h):
         else:
             alpha = 0.55
 
-　　　　 filtered[i] = (
+        filtered[i] = (
             previous[i]
             + alpha * (point - previous[i])
         )
