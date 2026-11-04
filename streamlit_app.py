@@ -98,7 +98,7 @@ BICEP_FEATURE_NAMES = [
 BICEP_MODEL_DIR = Path(__file__).resolve().parent / 'core' / 'bicep_model' / 'model'
 
 
-    @st.cache_resource(show_spinner='アームカールAIモデルを読み込んでいます…')
+@st.cache_resource(show_spinner='アームカールAIモデルを読み込んでいます…')
 def load_bicep_ai():
     """信頼できるリポジトリ由来のpklのみ読み込むこと。"""
     model_file = BICEP_MODEL_DIR / 'KNN_model.pkl'
