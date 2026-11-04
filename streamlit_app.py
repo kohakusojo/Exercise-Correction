@@ -48,7 +48,7 @@ MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pos
 MAX_MB = 100
 MAX_SECONDS = 30
 MAX_WIDTH = 640
-FPS_LIMIT = 12
+FPS_LIMIT = 10
 
 CONFIG = {
     'ベンチプレス': {
@@ -689,7 +689,7 @@ if upload is not None:
         st.error(f'ファイルが大きすぎます。{MAX_MB}MB以下にしてください。')
     else:  
         st.video(upload)
-        if st.button('▶ フォーム評価を開始',type='primary',use_container_width=True):
+        if st.button('▶ フォーム評価を開始',type='primary',width="stretch"):
             progress=st.progress(0,text='動画を準備中…')
             try:
                 with tempfile.TemporaryDirectory() as tmp:
@@ -754,9 +754,9 @@ if 'analysis' in st.session_state:
         }
         image_path = Path(__file__).resolve().parent / muscle_images[data['exercise']]
         if image_path.is_file():
-            st.image(str(image_path), caption="赤色：主に使用する筋肉", use_container_width=True)
+            st.image(str(image_path), caption="赤色：主に使用する筋肉", width='stretch')
         else:
-            st.image(muscle_diagram(data['exercise']), caption="使用筋肉の簡易図（参考）", use_container_width=True)
+            st.image(muscle_diagram(data['exercise']), caption="使用筋肉の簡易図（参考）", width='stretch')
             st.caption(f"画像 {image_path.name} が未配置のため簡易図を表示しています。")
     with right:
         st.write('**主な使用部位：** '+cfg['muscles'])
@@ -765,4 +765,4 @@ if 'analysis' in st.session_state:
         st.caption('筋肉の活動量や実際の負荷を直接測定しているわけではありません。')
     st.subheader('🎬 姿勢推定付き動画')
     st.video(data['video'])
-    st.download_button('解析動画をダウンロード（MP4）',data['video'],file_name='form_analysis.mp4',mime='video/mp4',use_container_width=True)
+    st.download_button('解析動画をダウンロード（MP4）',data['video'],file_name='form_analysis.mp4',mime='video/mp4',width='stretch')
