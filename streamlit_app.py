@@ -1,4 +1,7 @@
 import csv
+import pickle
+import warnings
+from collections import Counter
 import io
 import os
 import subprocess
@@ -45,7 +48,7 @@ MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pos
 MAX_MB = 100
 MAX_SECONDS = 30
 MAX_WIDTH = 640
-FPS_LIMIT = 20
+FPS_LIMIT = 12
 
 CONFIG = {
     'ベンチプレス': {
@@ -81,6 +84,61 @@ CONFIG = {
 }
 
 # MediaPipe landmark indices: shoulder 11/12, elbow 13/14, wrist 15/16, hip 23/24, knee 25/26, ankle 27/28.
+# アームカール学習済みモデルの入力順序（元の5.detection.ipynbと同じ）
+BICEP_KEYPOINTS = [
+    ('nose', 0), ('left_shoulder', 11), ('right_shoulder', 12),
+    ('right_elbow', 14), ('left_elbow', 13),
+    ('right_wrist', 16), ('left_wrist', 15),
+    ('left_hip', 23), ('right_hip', 24),
+]
+BICEP_FEATURE_NAMES = [
+    f'{name}_{axis}' for name, _ in BICEP_KEYPOINTS
+    for axis in ('x', 'y', 'z', 'v')
+]
+BICEP_MODEL_DIR = Path(__file__).resolve().parent / 'core' / 'bicep_model' / 'model'
+
+
+    @st.cache_resource(show_spinner='アームカールAIモデルを読み込んでいます…')
+def load_bicep_ai():
+    """信頼できるリポジトリ由来のpklのみ読み込むこと。"""
+    model_file = BICEP_MODEL_DIR / 'KNN_model.pkl'
+    scaler_file = BICEP_MODEL_DIR / 'input_scaler.pkl'
+    if not model_file.is_file() or not scaler_file.is_file():
+        raise FileNotFoundError('core/bicep_model/model に KNN_model.pkl と input_scaler.pkl が必要です')
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        with model_file.open('rb') as f:
+            model = pickle.load(f)
+        with scaler_file.open('rb') as f:
+            scaler = pickle.load(f)
+    if getattr(scaler, 'n_features_in_', None) != 36 or getattr(model, 'n_features_in_', None) != 36:
+        raise ValueError('学習済みモデルの特徴量数が36ではありません')
+    actual_columns = list(getattr(scaler, 'feature_names_in_', []))
+    if actual_columns and actual_columns != BICEP_FEATURE_NAMES:
+        raise ValueError('学習時と特徴量の順序が異なります')
+    version_warning = any('version' in str(w.message).lower() for w in caught)
+    return model, scaler, version_warning
+
+
+def predict_bicep_ai(landmarks, model, scaler):
+    """MediaPipe Tasks APIの33点から学習時と同じ36特徴量を抽出。"""
+    if any(not np.isfinite(getattr(landmarks[i], a, np.nan))
+           for _, i in BICEP_KEYPOINTS for a in ('x', 'y', 'z')):
+        return None
+    if any(getattr(landmarks[i], 'visibility', 0.0) < .45 for _, i in BICEP_KEYPOINTS):
+        return None
+    row = []
+    for _, i in BICEP_KEYPOINTS:
+        lm = landmarks[i]
+        row.extend([lm.x, lm.y, lm.z, getattr(lm, 'visibility', 1.0)])
+    features = pd.DataFrame([row], columns=BICEP_FEATURE_NAMES)
+    transformed = scaler.transform(features)
+    label = model.predict(transformed)[0]
+    probs = model.predict_proba(transformed)[0]
+    confidence = float(np.max(probs))
+    return str(label), confidence
+
+
 CONNECTIONS = [(11,12),(11,13),(13,15),(12,14),(14,16),(11,23),(12,24),(23,24),(23,25),(25,27),(24,26),(26,28)]
 
 @st.cache_resource(show_spinner='姿勢推定モデルを準備しています…')
@@ -113,7 +171,7 @@ def muscle_diagram(exercise):
 
     blue = (255, 100, 0)
 
-    if exercise == "ベンチプレス":
+　　if exercise == "ベンチプレス":
         cv2.circle(img, (140, 125), 18, blue, -1)
         cv2.circle(img, (180, 125), 18, blue, -1)
 
@@ -173,7 +231,7 @@ def select_side(lms, cfg, w, h, preferred=None):
             )
             options.append((side, value, confidence))
 
-    if not options:
+　　　if not options:
         return preferred, None
 
     best = max(options, key=lambda x: x[2])
@@ -241,7 +299,7 @@ def smooth_pose_points(lms, previous, w, h):
         else:
             alpha = 0.55
 
-        filtered[i] = (
+　　　　 filtered[i] = (
             previous[i]
             + alpha * (point - previous[i])
         )
@@ -293,7 +351,7 @@ def draw_pose(frame, lms, exercise, value, side, reps, level, points):
                 4, (255, 255, 255), -1
             )
 
-    label = (
+     label = (
         f'ANGLE: {value:.0f} deg'
         if value is not None else 'ANGLE: --'
     )
@@ -334,8 +392,119 @@ def normalize_video(src, dst):
         raise RuntimeError('動画の変換に失敗しました: '+p.stderr[-600:])
 
 
+# スクワットの既存LRモデル用特徴量（3.detection.ipynbに準拠）
+SQUAT_KEYPOINTS = [
+    ('nose', 0), ('left_shoulder', 11), ('right_shoulder', 12),
+    ('left_hip', 23), ('right_hip', 24),
+    ('left_knee', 25), ('right_knee', 26),
+    ('left_ankle', 27), ('right_ankle', 28),
+]
+SQUAT_FEATURE_NAMES = [
+    f'{name}_{axis}' for name, _ in SQUAT_KEYPOINTS
+    for axis in ('x', 'y', 'z', 'v')
+]
+SQUAT_MODEL_FILE = Path(__file__).resolve().parent / 'core' / 'squat_model' / 'model' / 'LR_model.pkl'
+
+@st.cache_resource(show_spinner='スクワットAIモデルを読み込んでいます…')
+def load_squat_ai():
+    if not SQUAT_MODEL_FILE.is_file():
+        raise FileNotFoundError('core/squat_model/model/LR_model.pkl がありません')
+    # 出所を確認した信頼できるモデルファイルだけを読み込んでください。
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        with SQUAT_MODEL_FILE.open('rb') as f:
+            model = pickle.load(f)
+    if getattr(model, 'n_features_in_', None) != 36:
+        raise ValueError('スクワットモデルの入力特徴量数が36ではありません')
+    feature_names = getattr(model, 'feature_names_in_', None)
+    if feature_names is not None and list(feature_names) != SQUAT_FEATURE_NAMES:
+        raise ValueError('スクワットモデルの特徴量名・順序が一致しません')
+    version_warning = any('version' in str(w.message).lower() for w in caught)
+    return model, version_warning
+
+
+def predict_squat_ai(landmarks, model):
+    if any(not np.isfinite(getattr(landmarks[i], axis, np.nan))
+           for _, i in SQUAT_KEYPOINTS for axis in ('x', 'y', 'z')):
+        return None
+    if any(getattr(landmarks[i], 'visibility', 0.0) < .45 for _, i in SQUAT_KEYPOINTS):
+        return None
+    row = [value for _, i in SQUAT_KEYPOINTS
+           for value in (landmarks[i].x, landmarks[i].y,
+                         landmarks[i].z, landmarks[i].visibility)]
+    X = pd.DataFrame([row], columns=SQUAT_FEATURE_NAMES)
+    pred = model.predict(X)[0]
+    prob = model.predict_proba(X)[0]
+    classes = list(model.classes_)
+    pos = classes.index(pred)
+    # 元ノートブックでは 0=down、1=up
+    label = 'down（しゃがみ）' if str(pred) == '0' else 'up（立位）' if str(pred) == '1' else str(pred)
+    return label, float(prob[pos])
+
+
+# ベンチプレス・スクワット：学習データから作ったモデルのみ読み込む。
+# 学習済みファイルがない場合は従来の角度判定を継続する。
+EXTRA_MODEL_DIRS = {
+    'ベンチプレス': Path(__file__).resolve().parent / 'core' / 'bench_model' / 'model',
+    'スクワット': Path(__file__).resolve().parent / 'core' / 'squat_model' / 'model',
+}
+
+@st.cache_resource(show_spinner='種目別AIモデルを準備しています…')
+def load_extra_ai(exercise):
+    folder = EXTRA_MODEL_DIRS[exercise]
+    model_file = folder / 'form_classifier.pkl'
+    if not model_file.is_file():
+        raise FileNotFoundError(f'{model_file.relative_to(Path(__file__).resolve().parent)} がありません。学習用スクリプトで作成してください。')
+    # 自分で学習した信頼できるpickleファイルのみ読み込む。
+    with model_file.open('rb') as f:
+        payload = pickle.load(f)
+    if not isinstance(payload, dict) or payload.get('schema') != 'pose36-v1':
+        raise ValueError('モデルの特徴量定義が対応していません')
+    if payload.get('exercise') != exercise:
+        raise ValueError('選択種目とモデルの種目が一致しません')
+    if payload.get('feature_names') != BICEP_FEATURE_NAMES:
+        raise ValueError('学習時と入力特徴量の順序が一致しません')
+    return payload['pipeline']
+
+
+def predict_extra_ai(landmarks, pipeline):
+    if any(not np.isfinite(getattr(landmarks[i], axis, np.nan))
+           for _, i in BICEP_KEYPOINTS for axis in ('x', 'y', 'z')):
+        return None
+    features = [[v for _, i in BICEP_KEYPOINTS
+                 for v in (landmarks[i].x, landmarks[i].y,
+                           landmarks[i].z, landmarks[i].visibility)]]
+    frame = pd.DataFrame(features, columns=BICEP_FEATURE_NAMES)
+    probs = pipeline.predict_proba(frame)[0]
+    idx = int(np.argmax(probs))
+    return str(pipeline.classes_[idx]), float(probs[idx])
+
+
 def analyze(src, out, exercise, progress):
     cfg=CONFIG[exercise]
+    ai_model = ai_scaler = None
+    ai_warning = None
+    ai_counts = Counter()
+    ai_confidences = []
+    if exercise == 'アームカール':
+        try:
+            ai_model, ai_scaler, version_warning = load_bicep_ai()
+            if version_warning:
+                ai_warning = '学習時とscikit-learnのバージョンが異なります。AI判定は参考値です。'
+        except Exception as exc:
+            ai_warning = f'アームカールAIモデルを読み込めませんでした：{exc}'
+    if exercise == 'スクワット':
+        try:
+            ai_model, version_warning = load_squat_ai()
+            if version_warning:
+                ai_warning = 'スクワットモデルの学習時とscikit-learnのバージョンが異なります。分類は参考値です。'
+        except Exception as exc:
+            ai_warning = f'スクワットAIモデルを読み込めませんでした（角度判定は利用可能）：{exc}'
+    elif exercise == 'ベンチプレス':
+        try:
+            ai_model = load_extra_ai(exercise)
+        except Exception as exc:
+            ai_warning = f'{exercise}のAIモデルは未導入です（角度判定は利用可能）：{exc}'
     cap=cv2.VideoCapture(str(src))
     if not cap.isOpened():
         raise RuntimeError('動画を読み込めませんでした')
@@ -388,15 +557,33 @@ def analyze(src, out, exercise, progress):
                 ms=max(last_ms+1,int((frame_id-1)*1000/fps)); last_ms=ms
                 result=detector.detect_for_video(mp_image,ms)
                 value=None; level='UNKNOWN'
+                ai_label = None
+                ai_confidence = None
                 if result.pose_landmarks:
                     lms=result.pose_landmarks[0]
                     missed_pose_frames = 0
+                    if ai_model is not None:
+                        try:
+                            prediction = (predict_bicep_ai(lms, ai_model, ai_scaler)
+                                          if exercise == 'アームカール' else
+                                          predict_squat_ai(lms, ai_model)
+                                          if exercise == 'スクワット' else
+                                          predict_extra_ai(lms, ai_model))
+                            if prediction is not None:
+                                ai_label, ai_confidence = prediction
+                                if ai_confidence >= .70:
+                                    ai_counts[ai_label] += 1
+                                    ai_confidences.append(ai_confidence)
+                        except Exception as exc:
+                            ai_warning = f'AI推論を停止しました：{exc}'
+                            ai_model = None
+                            ai_scaler = None
                     previous_points = smooth_pose_points(lms, previous_points, w, h)
                     old_side = side
                     side, raw = select_side(
                         lms, cfg, w, h, side
                     )
-
+                    
                     if old_side is not None and side != old_side:
                         smoothed = None
                         prev = None
@@ -452,12 +639,18 @@ def analyze(src, out, exercise, progress):
                                 down_frames = 0
                                 up_frames = 0
                     draw_pose(frame,lms,exercise,value,side,reps,level,previous_points)
+                    if ai_label is not None:
+                        ai_text = f'AI: {ai_label} ({ai_confidence:.0%})'
+                        cv2.putText(frame, ai_text, (12, 118), cv2.FONT_HERSHEY_SIMPLEX,
+                                    .55, (0, 0, 0), 4, cv2.LINE_AA)
+                        cv2.putText(frame, ai_text, (12, 118), cv2.FONT_HERSHEY_SIMPLEX,
+                                    .55, (255, 255, 255), 2, cv2.LINE_AA)
                 else:
                     missed_pose_frames += 1
                     if missed_pose_frames >= 5:
                         previous_points = None
                     cv2.putText(frame,f'REPS: {reps} / NO POSE',(10,30),cv2.FONT_HERSHEY_SIMPLEX,.6,(255,255,255),2)
-                rows.append({'秒':round((frame_id-1)/fps,2),'角度':round(value,1) if value is not None else None,'側':side,'推定負荷':level,'回数':reps})
+                rows.append({'秒':round((frame_id-1)/fps,2),'角度':round(value,1) if value is not None else None,'側':side,'推定負荷':level,'回数':reps,'AI分類':ai_label,'AI予測確率':round(ai_confidence, 3) if ai_confidence is not None else None})
                 writer.write(frame)
                 if frame_id%12==0:
                     progress.progress(min(.98,frame_id/max(n,1)),text=f'動画解析中… {frame_id}フレーム')
@@ -482,7 +675,7 @@ def analyze(src, out, exercise, progress):
     if reps and invalid==0:
         advice.append('今回検出した反復では、関節角度の基準を満たしました。左右差や姿勢の安定も確認してください。')
     advice.append(cfg['tip'])
-    return {'reps':reps,'valid':valid,'invalid':invalid,'score':score,'min':min_angle,'max':max_angle,'ratio':detection_ratio,'advice':advice,'csv':pd.DataFrame(rows)}
+    return {'reps':reps,'valid':valid,'invalid':invalid,'score':score,'min':min_angle,'max':max_angle,'ratio':detection_ratio,'advice':advice,'csv':pd.DataFrame(rows),'ai_counts':dict(ai_counts),'ai_mean_confidence':float(np.mean(ai_confidences)) if ai_confidences else None,'ai_warning':ai_warning}
 
 
 st.title('🏋️ 筋トレフォーム判定AI')
@@ -535,6 +728,19 @@ if 'analysis' in st.session_state:
         st.progress(result['score']/100)
     else:
         st.warning('十分な反復動作を検出できなかったため、採点できませんでした。')
+    if data['exercise'] in ('アームカール', 'ベンチプレス', 'スクワット'):
+        st.subheader(f"🤖 {data['exercise']} AI姿勢分類")
+        if result.get('ai_warning'):
+            st.warning(result['ai_warning'])
+        counts = result.get('ai_counts', {})
+        if counts:
+            dominant = max(counts, key=counts.get)
+            st.write(f'**最頻分類ラベル：{dominant}**')
+            st.write(f"AI予測確率の平均：{result['ai_mean_confidence']:.1%}")
+            st.bar_chart(pd.Series(counts, name='フレーム数'))
+            st.caption('分類ラベルは学習データ由来です。予測確率は正解率ではなく、フォームの安全性も保証しません。')
+        else:
+            st.info('AI分類結果はまだありません。モデルの有無・入力形式・撮影条件を確認してください。角度判定は継続しています。')
     st.subheader('💡 改善アドバイス')
     for message in result['advice']:
         st.write('・'+message)
@@ -560,9 +766,3 @@ if 'analysis' in st.session_state:
     st.subheader('🎬 姿勢推定付き動画')
     st.video(data['video'])
     st.download_button('解析動画をダウンロード（MP4）',data['video'],file_name='form_analysis.mp4',mime='video/mp4',use_container_width=True)
-    csv_bytes=result['csv'].to_csv(index=False).encode('utf-8-sig')
-    st.download_button('角度・回数データをダウンロード（CSV）',csv_bytes,file_name='form_analysis.csv',mime='text/csv',use_container_width=True)
-    with st.expander('関節角度の推移'):
-        st.line_chart(result['csv'].set_index('秒')['角度'])
-        st.dataframe(result['csv'].tail(30),use_container_width=True)
-    st.caption('本アプリのフォーム採点は簡易的な関節角度ルールに基づく参考値です。安全性やトレーニング効果を保証するものではありません。')
